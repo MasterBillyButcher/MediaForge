@@ -89,7 +89,18 @@ export interface CreateJobInputDto {
 
 const PORT = 3030;
 
+/**
+ * Where the playlist worker lives:
+ *  - default (single-host / Docker / sandbox): relative `/pw` paths. The sandbox
+ *    gateway routes via `?XTransformPort=3030`; other hosts use the Next.js
+ *    rewrite to `127.0.0.1:3030` (see next.config.ts).
+ *  - `NEXT_PUBLIC_PLAYLIST_WORKER_URL` (split deployments): absolute base URL,
+ *    e.g. `https://worker.example.com` — used verbatim, no port param added.
+ */
+const WORKER_URL = (process.env.NEXT_PUBLIC_PLAYLIST_WORKER_URL ?? '').replace(/\/+$/, '');
+
 function withPort(p: string): string {
+  if (WORKER_URL) return `${WORKER_URL}${p}`;
   return `${p}${p.includes('?') ? '&' : '?'}XTransformPort=${PORT}`;
 }
 

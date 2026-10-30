@@ -119,8 +119,67 @@ bun run dev            # http://localhost:3000
 # 5. (optional, for playlist batch downloads) start the playlist worker
 cd mini-services/playlist-worker
 bun install
-bun run dev            # listens on :3031
+bun run dev            # listens on :3030
 ```
+
+---
+
+## 🚢 Deployment
+
+### ⚠️ Vercel / Netlify / serverless — NOT supported
+
+MediaForge is **not a serverless app**. Deploying to Vercel or Netlify will build, but
+core features fail with errors like `Could not read that playlist — Request failed (404)`:
+
+| Requirement | Why serverless can't do it |
+|---|---|
+| `ffmpeg` / `ffprobe` binaries | Conversions, toolbox ops, editor rendering and HLS muxing shell out to FFmpeg — not available in serverless runtimes |
+| `yt-dlp` binary | Playlist & platform extraction runs on yt-dlp — not available |
+| Playlist worker | A **long-running background service** on port 3030; serverless functions can't host it, so `/pw/*` requests 404 |
+| Writable filesystem | SQLite (`DATABASE_URL=file:…`) and the `storage/` folder need a writable, persistent disk |
+| Execution time | Media jobs run minutes — far beyond serverless timeouts (10–60 s) |
+
+You can verify any deployment by opening **`/api/system/health`** — it reports exactly
+which dependency (ffmpeg, ffprobe, yt-dlp, worker, database) is missing and how to fix it.
+
+### ✅ Option A — Docker (any VPS / any Docker host)
+
+```bash
+git clone https://github.com/MasterBillyButcher/MediaForge.git
+cd MediaForge
+docker compose up -d --build     # http://localhost:3000
+```
+
+One container runs everything: web app (:3000) + playlist worker (:3030, proxied at `/pw/*`),
+with ffmpeg, yt-dlp and the SQLite database preconfigured. Data persists in the
+`mediaforge-db`, `mediaforge-storage` and `mediaforge-playlist` volumes.
+
+### ✅ Option B — Railway / Render / Fly.io (from the Dockerfile)
+
+1. Create a new service → **Deploy from GitHub repo** (these platforms build the repo's `Dockerfile` automatically).
+2. Set env var `DATABASE_URL=file:/app/db/custom.db` (preset in the image already).
+3. Attach a **persistent volume** for data: `/app/db`, `/app/storage` and `/app/mini-services/playlist-worker/storage`.
+4. Expose port `3000`.
+
+### ✅ Option C — plain VPS (Ubuntu/Debian)
+
+```bash
+sudo apt install -y ffmpeg python3-pip
+sudo pip3 install yt-dlp
+curl -fsSL https://bun.sh/install | bash
+
+git clone https://github.com/MasterBillyButcher/MediaForge.git && cd MediaForge
+bun install
+mkdir -p db && echo "DATABASE_URL=file:$(pwd)/db/custom.db" > .env
+bun run db:push
+
+# run both processes (e.g. under pm2/systemd)
+bun run build && bun run start                                      # web :3000
+cd mini-services/playlist-worker && bun install && bun index.ts     # worker :3030
+```
+
+Then point a reverse proxy (Nginx/Caddy) at port 3000 — `/pw/*` is proxied to the
+worker automatically by the Next.js rewrite.
 
 ---
 
@@ -140,6 +199,7 @@ bun run dev            # listens on :3031
 | `/api/jobs/{id}` | GET | Job status + progress |
 | `/api/jobs/{id}/result` | GET | Fetch processed result |
 | `/api/files` | GET | List managed files |
+| `/api/system/health` | GET | Deployment diagnostics (ffmpeg, yt-dlp, worker, database) |
 
 Full contract details: [`docs/api-contracts.md`](docs/api-contracts.md)
 

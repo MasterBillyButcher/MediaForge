@@ -1,0 +1,37 @@
+# dependencies
+node_modules
+mini-services/playlist-worker/node_modules
+
+# build output
+.next
+out
+build
+
+# git & docs
+.git
+.github
+agent-ctx
+docs
+
+# runtime data (mounted as volumes instead)
+db
+storage
+mini-services/playlist-worker/storage
+download
+
+# sandbox / local artifacts
+.zscripts
+skills
+tests
+examples
+dev.log
+server.log
+*.log
+.env
+.env.*
+!.env.example
+
+# docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
