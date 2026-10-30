@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A stored media file on disk (uploads, processing results, downloads)
+model MediaFile {
+  id           String    @id // server-generated uuid
+  kind         String // 'upload' | 'result' | 'download'
+  originalName String
+  storedName   String // file name inside storage dir
+  sizeBytes    Int
+  mime         String
+  metaJson     String? // ProbeResult JSON
+  operation    String? // e.g. 'convert:mp4', 'edl-render', 'image:resize'
+  sourceUrl    String? // for remote downloads
+  sourceType   String? // 'direct' | platform name
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime? // TTL for automatic cleanup
+}
+
+// Download history for URL-based downloads
+model DownloadRecord {
+  id        String   @id @default(cuid())
+  url       String
+  platform  String // 'direct' | 'youtube' | 'tiktok' | ...
+  fileName  String?
+  sizeBytes Int?
+  mime      String?
+  status    String // 'completed' | 'failed' | 'unsupported'
+  error     String?
+  createdAt DateTime @default(now())
+}
