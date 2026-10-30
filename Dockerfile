@@ -46,8 +46,7 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=0.0.0.0 \
-    PORT=3000 \
-    DATABASE_URL=file:/app/db/custom.db
+    PORT=3000
 
 # ffmpeg/ffprobe for all media processing; yt-dlp for platform/playlist downloads
 RUN apt-get update \
@@ -76,11 +75,13 @@ COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Persistent data locations
-VOLUME ["/app/db", "/app/storage", "/app/mini-services/playlist-worker/storage"]
+# Persistent data (single-volume deployments mount a disk at /data and set
+# MEDIA_DATA_DIR=/data; otherwise data lives under /app)
+VOLUME ["/data"]
 RUN mkdir -p /app/db /app/storage/uploads /app/storage/results \
              /app/mini-services/playlist-worker/storage/jobs \
-             /app/mini-services/playlist-worker/storage/tmp
+             /app/mini-services/playlist-worker/storage/tmp \
+             /data
 
 EXPOSE 3000
 ENTRYPOINT ["docker-entrypoint.sh"]

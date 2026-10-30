@@ -6,14 +6,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # SQLite database (created automatically on first boot)
-      DATABASE_URL: file:/app/db/custom.db
+      # One root for ALL persistent data (database, uploads/results, playlist jobs).
+      # Mount a volume/disk at this path and you're done.
+      MEDIA_DATA_DIR: /data
       # Optional: point the browser directly at a separate playlist worker host
       # NEXT_PUBLIC_PLAYLIST_WORKER_URL: https://worker.example.com
     volumes:
-      - mediaforge-db:/app/db
-      - mediaforge-storage:/app/storage
-      - mediaforge-playlist:/app/mini-services/playlist-worker/storage
+      - mediaforge-data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:3000/api/system/health'); process.exit(r.ok ? 0 : 1)"]
@@ -23,6 +22,4 @@ services:
       retries: 3
 
 volumes:
-  mediaforge-db:
-  mediaforge-storage:
-  mediaforge-playlist:
+  mediaforge-data:

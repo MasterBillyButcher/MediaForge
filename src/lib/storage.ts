@@ -12,7 +12,12 @@ import type { MediaFileRecord, MediaKind, ProbeResult } from '@/lib/types';
  * removes expired files + rows so user data is never retained unnecessarily.
  */
 
-export const STORAGE_DIR = path.join(process.cwd(), 'storage');
+// Persistent data root. Deployments that mount a single volume (Render disk,
+// Fly.io volume, Docker volume) set MEDIA_DATA_DIR=/data; local dev and
+// multi-volume Docker setups fall back to <project>/storage.
+export const STORAGE_DIR = process.env.MEDIA_DATA_DIR
+  ? path.join(process.env.MEDIA_DATA_DIR, 'storage')
+  : path.join(process.cwd(), 'storage');
 export const UPLOADS_DIR = path.join(STORAGE_DIR, 'uploads');
 export const RESULTS_DIR = path.join(STORAGE_DIR, 'results');
 

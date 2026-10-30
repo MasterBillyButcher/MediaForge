@@ -151,17 +151,26 @@ docker compose up -d --build     # http://localhost:3000
 ```
 
 One container runs everything: web app (:3000) + playlist worker (:3030, proxied at `/pw/*`),
-with ffmpeg, yt-dlp and the SQLite database preconfigured. Data persists in the
-`mediaforge-db`, `mediaforge-storage` and `mediaforge-playlist` volumes.
+with ffmpeg, yt-dlp and the SQLite database preconfigured. All persistent data
+(database, files, playlist jobs) lives under `MEDIA_DATA_DIR=/data`, backed by the
+`mediaforge-data` volume.
 
-### ✅ Option B — Railway / Render / Fly.io (from the Dockerfile)
+### ✅ Option B — Render (GitHub-native, closest to Railway)
 
-1. Create a new service → **Deploy from GitHub repo** (these platforms build the repo's `Dockerfile` automatically).
-2. Set env var `DATABASE_URL=file:/app/db/custom.db` (preset in the image already).
-3. Attach a **persistent volume** for data: `/app/db`, `/app/storage` and `/app/mini-services/playlist-worker/storage`.
-4. Expose port `3000`.
+1. [render.com](https://render.com) → sign in with GitHub → **New +** → **Web Service** → pick the `MediaForge` repo.
+2. Runtime **Docker** is auto-detected from the `Dockerfile`. Port: `3000`.
+3. Env var: `MEDIA_DATA_DIR=/data`.
+4. **Starter** plan ($7/mo): add a **Disk** → mount path `/data`, 5 GB → your DB & files persist.
+   *(Free plan works for testing, but the disk is wiped on restart/sleep.)*
+5. Deploy — then verify via `https://<your-app>.onrender.com/api/system/health`.
 
-### ✅ Option C — plain VPS (Ubuntu/Debian)
+### ✅ Option C — Railway / Fly.io / Koyeb (from the Dockerfile)
+
+- **Railway**: New Project → Deploy from GitHub → add a Volume mounted at `/data` + env var `MEDIA_DATA_DIR=/data`.
+- **Fly.io**: `fly launch` (detects the Dockerfile) → `fly volumes create data --size 3` → mount at `/data` → `fly deploy` → set secret `MEDIA_DATA_DIR=/data`.
+- **Koyeb**: Create Service → GitHub → Dockerfile autodetected → add a persistent volume at `/data` + env var `MEDIA_DATA_DIR=/data`.
+
+### ✅ Option D — plain VPS (Ubuntu/Debian, cheapest full control)
 
 ```bash
 sudo apt install -y ffmpeg python3-pip
@@ -178,8 +187,9 @@ bun run build && bun run start                                      # web :3000
 cd mini-services/playlist-worker && bun install && bun index.ts     # worker :3030
 ```
 
-Then point a reverse proxy (Nginx/Caddy) at port 3000 — `/pw/*` is proxied to the
-worker automatically by the Next.js rewrite.
+Or simply install Docker and use Option A. Then point a reverse proxy
+(Nginx/Caddy) at port 3000 — `/pw/*` is proxied to the worker automatically by
+the Next.js rewrite.
 
 ---
 

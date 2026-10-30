@@ -16,7 +16,12 @@ import {
  * - TTL sweeper deletes old jobs and their files.
  */
 
-export const STORAGE_ROOT = path.join(import.meta.dir, 'storage');
+// Persistent data root: PLAYLIST_STORAGE_ROOT (explicit) > MEDIA_DATA_DIR/playlist
+// (single-volume deployments) > ./storage next to this file (local dev).
+export const STORAGE_ROOT = process.env.PLAYLIST_STORAGE_ROOT
+  ?? (process.env.MEDIA_DATA_DIR
+    ? path.join(process.env.MEDIA_DATA_DIR, 'playlist')
+    : path.join(import.meta.dir, 'storage'));
 export const JOBS_DIR = path.join(STORAGE_ROOT, 'jobs');
 export const TMP_DIR = path.join(STORAGE_ROOT, 'tmp');
 export const JOB_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
