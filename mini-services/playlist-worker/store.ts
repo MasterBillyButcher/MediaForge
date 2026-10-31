@@ -381,7 +381,9 @@ async function finishJob(job: PlaylistJob): Promise<void> {
   const c = jobCookies.get(job.id);
   if (c) {
     jobCookies.delete(job.id);
-    await deleteFileQuiet(c);
+    // Only disposable per-job temp files are deleted here — the shared
+    // server-saved cookies file (storage/cookies/) must survive job cleanup.
+    if (c.startsWith(TMP_DIR)) await deleteFileQuiet(c);
   }
 }
 

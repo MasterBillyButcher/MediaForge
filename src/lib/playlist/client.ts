@@ -153,6 +153,32 @@ export async function fetchPlaylistJobs(): Promise<{ jobs: PlaylistJobSummaryDto
   return handleJson<{ jobs: PlaylistJobSummaryDto[] }>(res);
 }
 
+export interface ServerCookiesStatusDto {
+  saved: boolean;
+  updatedAt: number | null;
+  cookieCount: number | null;
+  domains: string[] | null;
+}
+
+export async function fetchServerCookies(): Promise<ServerCookiesStatusDto> {
+  const res = await fetch(withPort('/pw/cookies'));
+  return handleJson<ServerCookiesStatusDto>(res);
+}
+
+export async function saveServerCookies(cookies: string): Promise<ServerCookiesStatusDto> {
+  const res = await fetch(withPort('/pw/cookies'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookies }),
+  });
+  return handleJson<ServerCookiesStatusDto>(res);
+}
+
+export async function clearServerCookies(): Promise<ServerCookiesStatusDto> {
+  const res = await fetch(withPort('/pw/cookies'), { method: 'DELETE' });
+  return handleJson<ServerCookiesStatusDto>(res);
+}
+
 export async function cancelPlaylistJob(id: string): Promise<void> {
   const res = await fetch(withPort(`/pw/jobs/${id}/cancel`), { method: 'POST' });
   return handleJson<void>(res);

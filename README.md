@@ -250,11 +250,21 @@ end-to-end, including **retrying an existing failed job with cookies**:
 1. In your browser install a cookies export extension (e.g. **Get cookies.txt LOCALLY**).
 2. Log in to youtube.com and export the cookies for `.youtube.com`.
 3. In the Playlist module → **Advanced options** → paste the exported `cookies.txt` contents.
-4. Re-fetch the playlist (or open your failed job and press **Retry failed**) — every task
+4. Press **Save on server** (optional but recommended) — the credentials are stored in the
+   persistent data volume and applied **automatically** to every inspect, download and retry.
+5. Re-fetch the playlist (or open your failed job and press **Retry failed**) — every task
    now runs with your cookies.
 
 > Never share exported cookies — they grant access to your account. Paste them only into
-> your own deployment.
+> your own deployment. Saved cookies live in `<data>/playlist/cookies/` (gitignored,
+> `0600` permissions) and the API never returns their contents — only metadata.
+
+### YouTube downloads miss formats / "Requested format is not available"
+
+Since yt-dlp 2026.10 the YouTube JS challenge (n-challenge) is only solved when a
+JavaScript runtime is enabled. MediaForge enables `deno`, `node` and `bun` explicitly —
+the Docker image ships Bun, and the sandbox uses Node. If you run the worker elsewhere,
+install **Node.js ≥ 23.5** (or Deno) and yt-dlp will pick it up automatically.
 
 ---
 

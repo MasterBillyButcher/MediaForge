@@ -596,7 +596,7 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
               </p>
               <ul className="mt-1.5 list-disc space-y-1 pl-4 text-muted-foreground">
                 <li>YouTube, Vimeo, Dailymotion — cloud IPs hit bot protection</li>
-                <li>Paste your own cookies.txt (Advanced in step 3) for authorized access</li>
+                <li>Paste your own cookies.txt (Advanced in step 3) — or save it once on the server — for authorized access</li>
                 <li>Only download content you own or are licensed to use</li>
               </ul>
             </div>

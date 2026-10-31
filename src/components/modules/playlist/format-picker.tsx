@@ -1,13 +1,22 @@
 'use client';
 
-import { useState } from 'react';
-import { Captions, Cookie, Disc3, Gauge, Scissors, Settings2, Sparkles, Terminal } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  BadgeCheck, Captions, Cookie, Disc3, Gauge, Loader2, Save, Scissors, Settings2,
+  Sparkles, Terminal, Trash2,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import {
+  clearServerCookies, fetchServerCookies, saveServerCookies, type ServerCookiesStatusDto,
+} from '@/lib/playlist/client';
 
 export const VIDEO_FORMATS = ['mp4', 'webm', 'mkv', 'mov'] as const;
 export const AUDIO_FORMATS = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus'] as const;
@@ -88,6 +97,53 @@ export function FormatPicker(props: FormatPickerProps) {
   const { format, quality, bitrate, onFormat, onQuality, onBitrate, cookies, onCookies, extras, onExtras } = props;
   const isAudio = (AUDIO_FORMATS as readonly string[]).includes(format);
   const [advanced, setAdvanced] = useState(false);
+
+  // --- saved server-side cookies -------------------------------------------
+  const [savedCookies, setSavedCookies] = useState<ServerCookiesStatusDto | null>(null);
+  const [cookiesBusy, setCookiesBusy] = useState(false);
+
+  const refreshSavedCookies = useCallback(async () => {
+    try {
+      setSavedCookies(await fetchServerCookies());
+    } catch {
+      setSavedCookies(null); // worker unreachable — hide server status, keep manual paste working
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSavedCookies();
+  }, [refreshSavedCookies]);
+
+  const handleSaveCookies = useCallback(async () => {
+    if (!cookies.trim()) {
+      toast.error('Paste the cookies.txt contents first, then save.');
+      return;
+    }
+    setCookiesBusy(true);
+    try {
+      const status = await saveServerCookies(cookies);
+      setSavedCookies(status);
+      toast.success('Cookies saved on the server — every download now reuses them automatically.', {
+        description: `${status.cookieCount ?? 0} cookies · ${status.domains?.slice(0, 3).join(', ') ?? ''}`,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not save the cookies file.');
+    } finally {
+      setCookiesBusy(false);
+    }
+  }, [cookies]);
+
+  const handleClearCookies = useCallback(async () => {
+    setCookiesBusy(true);
+    try {
+      setSavedCookies(await clearServerCookies());
+      toast.info('Saved cookies removed from the server.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not remove the saved cookies.');
+    } finally {
+      setCookiesBusy(false);
+    }
+  }, []);
 
   return (
     <Card>
@@ -185,12 +241,20 @@ export function FormatPicker(props: FormatPickerProps) {
             <div className="flex items-start gap-2.5">
               <Cookie className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
               <div>
-                <p className="text-sm font-medium">Authorized access (cookies)</p>
+                <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  Authorized access (cookies)
+                  {savedCookies?.saved && (
+                    <Badge variant="secondary" className="gap-1 font-normal">
+                      <BadgeCheck className="h-3 w-3 text-primary" aria-hidden />
+                      Saved on server
+                    </Badge>
+                  )}
+                </p>
                 <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
                   Platforms like YouTube or Vimeo block cloud IPs for anonymous downloads. Paste your own
                   cookies.txt (Netscape format) to use <em>your</em> authorized session — e.g. to download
-                  playlists you own or have rights to. Cookies are kept in server memory for this job only
-                  and deleted afterwards.
+                  playlists you own or have rights to. Save them once on the server and every download
+                  reuses them automatically; pasted cookies for a single job are deleted after it finishes.
                 </p>
               </div>
             </div>
@@ -201,7 +265,7 @@ export function FormatPicker(props: FormatPickerProps) {
             />
           </div>
           {advanced && (
-            <div className="mt-3 space-y-2">
+            <div className="space-y-2">
               <Label htmlFor="pl-cookies" className="text-xs">
                 cookies.txt contents (Netscape format)
               </Label>
@@ -214,6 +278,49 @@ export function FormatPicker(props: FormatPickerProps) {
                 value={cookies}
                 onChange={(e) => onCookies(e.target.value)}
               />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 gap-1.5"
+                  onClick={() => void handleSaveCookies()}
+                  disabled={cookiesBusy || !cookies.trim()}
+                >
+                  {cookiesBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" aria-hidden />
+                  )}
+                  Save on server
+                </Button>
+                {savedCookies?.saved && (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {savedCookies.cookieCount ?? '?'} cookies
+                      {savedCookies.domains && savedCookies.domains.length > 0
+                        ? ` · ${savedCookies.domains.slice(0, 3).join(', ')}`
+                        : ''}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-9 gap-1.5 text-muted-foreground hover:text-destructive"
+                      onClick={() => void handleClearCookies()}
+                      disabled={cookiesBusy}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      Remove
+                    </Button>
+                  </>
+                )}
+              </div>
+              {savedCookies?.saved && (
+                <p className="text-xs text-muted-foreground">
+                  Saved cookies are applied automatically to every inspect &amp; download — no need to
+                  paste them again unless they expire.
+                </p>
+              )}
             </div>
           )}
         </div>

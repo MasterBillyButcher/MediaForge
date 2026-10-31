@@ -288,7 +288,14 @@ function buildAdvancedArgs(p: {
 // URL / entry extraction
 // ---------------------------------------------------------------------------
 
-const BASE_ARGS = ['--no-warnings', '--ignore-config', '--no-color', '--socket-timeout', '25', '--retries', '3'];
+// yt-dlp 2026.10+ only enables deno by default for the YouTube n-challenge.
+// Explicitly enable all supported runtimes so whichever is installed on the
+// host is used (node in this sandbox, bun in the Docker image, deno if
+// installed) — without one, YouTube hides most formats behind the JS challenge.
+const BASE_ARGS = [
+  '--no-warnings', '--ignore-config', '--no-color', '--socket-timeout', '25', '--retries', '3',
+  '--js-runtimes', 'deno', '--js-runtimes', 'node', '--js-runtimes', 'bun',
+];
 
 function thumbnailOf(e: Record<string, unknown>): string | null {
   if (typeof e.thumbnail === 'string' && e.thumbnail) return e.thumbnail;
@@ -322,6 +329,21 @@ function normalizeFlatEntry(e: Record<string, unknown>): PlaylistEntry | null {
 
 /** Extract playlist or single-video info. Flat = fast (no per-video hits). */
 export async function extractInfo(url: string, cookiesPath: string | null, timeoutMs = 120_000): Promise<InfoResult> {
+  // YouTube's bot wall is probabilistic even with valid cookies — a single
+  // delayed retry resolves most transient rejections without user action.
+  const attempt = () => extractInfoOnce(url, cookiesPath, timeoutMs);
+  try {
+    return await attempt();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    const transient = msg.includes('bot detection') || msg.toLowerCase().includes('rate-limit');
+    if (!transient) throw err;
+    await new Promise((r) => setTimeout(r, 2500));
+    return await attempt();
+  }
+}
+
+async function extractInfoOnce(url: string, cookiesPath: string | null, timeoutMs: number): Promise<InfoResult> {
   const args = [...BASE_ARGS, '--flat-playlist', '-J', ...(cookiesPath ? ['--cookies', cookiesPath] : []), '--', url];
   const res = await runUntil(ytDlpPath(), args, timeoutMs);
   if (res.code !== 0 && !res.stdout.trim()) {

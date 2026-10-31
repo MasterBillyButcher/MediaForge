@@ -1,7 +1,6 @@
 import archiver from 'archiver';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import {
   AUDIO_BITRATES, AUDIO_FORMATS, MIME_BY_EXT, QUALITY_HEIGHTS, VIDEO_FORMATS,
   deleteFileQuiet, detectAria2c, extractInfo, hydrateEntries, resolveBinaries, saveCookiesFile,
@@ -11,6 +10,10 @@ import {
   JobInputError, TMP_DIR, boot, cancelJob, createJob, deleteJob, getJob,
   jobStats, listJobs, retryJob, setJobCookies,
 } from './store';
+import {
+  clearServerCookies, saveServerCookies, serverCookiesFilePath, serverCookiesStatus,
+  type ServerCookiesStatus,
+} from './server-cookies';
 
 /**
  * Playlist Worker — long-running playlist/queue downloads on a dedicated
@@ -18,6 +21,9 @@ import {
  *
  * Routes (all under /pw, reached via the gateway with ?XTransformPort=3030):
  *   GET    /pw/health
+ *   GET    /pw/cookies         → saved-cookies status (metadata only, never contents)
+ *   POST   /pw/cookies         {cookies} — save/replace the server-side cookies file
+ *   DELETE /pw/cookies         — remove the saved cookies
  *   POST   /pw/info            {url, cookies?}
  *   POST   /pw/jobs            {entries[], format, quality, bitrate, title?, sourceUrl?, cookies?}
  *   GET    /pw/jobs
@@ -27,6 +33,9 @@ import {
  *   DELETE /pw/jobs/:id
  *   GET    /pw/jobs/:id/zip
  *   GET    /pw/file/:jobId/:index      (?inline=1 supported, Range requests honored)
+ *
+ * When a request carries no cookies, the saved server-side cookies file is
+ * used automatically (see server-cookies.ts), so credentials are pasted once.
  */
 
 const PORT = 3030;
@@ -71,7 +80,10 @@ async function handleInfo(body: Record<string, unknown>): Promise<Response> {
   const url = typeof body.url === 'string' ? body.url.trim() : '';
   if (!url || !/^https?:\/\//i.test(url)) return errorJson('Enter a valid URL starting with http:// or https://.');
   const cookiesRaw = typeof body.cookies === 'string' ? body.cookies : '';
-  const cookiesPath = cookiesRaw ? await saveCookiesFile(cookiesRaw, TMP_DIR) : null;
+  // request cookies win; otherwise fall back to the saved server-side cookies
+  const cookiesPath = cookiesRaw
+    ? await saveCookiesFile(cookiesRaw, TMP_DIR)
+    : await serverCookiesFilePath();
   if (cookiesRaw && !cookiesPath) {
     return errorJson('The cookies file could not be parsed. Export cookies in Netscape format (cookies.txt) and paste its full contents.');
   }
@@ -83,7 +95,8 @@ async function handleInfo(body: Record<string, unknown>): Promise<Response> {
   } catch (err) {
     return errorJson(err instanceof Error ? err.message : 'Could not inspect that URL.', 422);
   } finally {
-    await deleteFileQuiet(cookiesPath);
+    // never delete the shared saved-cookies file — only per-request temp copies
+    if (cookiesPath && cookiesPath.startsWith(TMP_DIR)) await deleteFileQuiet(cookiesPath);
   }
 }
 
@@ -121,7 +134,10 @@ async function handleCreateJob(body: Record<string, unknown>): Promise<Response>
   }
 
   const cookiesRaw = typeof body.cookies === 'string' ? body.cookies : '';
-  const cookiesPath = cookiesRaw ? await saveCookiesFile(cookiesRaw, TMP_DIR) : null;
+  // request cookies win; otherwise fall back to the saved server-side cookies
+  const cookiesPath = cookiesRaw
+    ? await saveCookiesFile(cookiesRaw, TMP_DIR)
+    : await serverCookiesFilePath();
   if (cookiesRaw && !cookiesPath) {
     return errorJson('The cookies file could not be parsed. Export cookies in Netscape format (cookies.txt) and paste its full contents.');
   }
@@ -137,13 +153,11 @@ async function handleCreateJob(body: Record<string, unknown>): Promise<Response>
       cookiesPath,
       entries,
     });
-    if (cookiesPath) {
-      const { jobCookies } = await import('./store');
-      jobCookies.set(job.id, cookiesPath);
-    }
+    if (cookiesPath) setJobCookies(job.id, cookiesPath);
     return json({ jobId: job.id, total: job.videos.length }, 201);
   } catch (err) {
-    await deleteFileQuiet(cookiesPath);
+    // only dispose per-request temp copies — the saved cookies file must survive
+    if (cookiesPath && cookiesPath.startsWith(TMP_DIR)) await deleteFileQuiet(cookiesPath);
     if (err instanceof JobInputError) return errorJson(err.message, 400);
     return errorJson(err instanceof Error ? err.message : 'Could not create the job.', 500);
   }
@@ -203,6 +217,10 @@ async function handleFile(req: Request, jobId: string, indexStr: string): Promis
     'Accept-Ranges': 'bytes',
   };
 
+  // Bun-native file responses: Readable.toWeb(createReadStream()) stalls on
+  // full-file transfers in Bun, while Bun.file streams reliably (sendfile).
+  const bunFile = Bun.file(filePath);
+
   const range = req.headers.get('range');
   if (range) {
     const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
@@ -213,8 +231,7 @@ async function handleFile(req: Request, jobId: string, indexStr: string): Promis
         return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${stat.size}` } });
       }
       end = Math.min(end, stat.size - 1);
-      const stream = (await import('node:fs')).createReadStream(filePath, { start, end });
-      return new Response(Readable.toWeb(stream) as ReadableStream, {
+      return new Response(bunFile.slice(start, end + 1), {
         status: 206,
         headers: {
           ...baseHeaders,
@@ -225,11 +242,66 @@ async function handleFile(req: Request, jobId: string, indexStr: string): Promis
     }
   }
 
-  const stream = (await import('node:fs')).createReadStream(filePath);
-  return new Response(Readable.toWeb(stream) as ReadableStream, {
+  return new Response(bunFile, {
     status: 200,
     headers: { ...baseHeaders, 'Content-Length': String(stat.size) },
   });
+}
+
+interface ZipCacheState {
+  promise: Promise<void> | null;
+  fileCount: number;
+}
+
+// Zip bundles are materialized to a cache file inside the job dir (archiver →
+// node write stream is reliable in Bun) and served with Bun.file. Streaming
+// archiver straight into the Response body stalls in Bun.
+const zipCache = new Map<string, ZipCacheState>();
+
+async function buildZipBundle(jobId: string, job: NonNullable<ReturnType<typeof getJob>>): Promise<string> {
+  const done = job.videos.filter((v) => v.state === 'completed' && v.fileName);
+  const state = zipCache.get(jobId) ?? { promise: null, fileCount: -1 };
+
+  // Rebuild when missing or when more files completed since the last build (e.g. after retry)
+  if (state.promise && state.fileCount === done.length) {
+    await state.promise;
+    return path.join(job.dir, '__bundle.zip');
+  }
+
+  const zipPath = path.join(job.dir, '__bundle.zip');
+  const build = (async () => {
+    const { createWriteStream } = await import('node:fs');
+    await new Promise<void>((resolve, reject) => {
+      const archive = archiver('zip', { store: true }); // media is already compressed
+      const out = createWriteStream(zipPath);
+      const fail = (err: Error) => {
+        archive.abort?.();
+        out.destroy();
+        fs.unlink(zipPath).catch(() => undefined);
+        reject(err);
+      };
+      archive.on('error', fail);
+      out.on('error', fail);
+      out.on('finish', () => resolve());
+      archive.pipe(out);
+      for (const v of done) {
+        const filePath = path.join(job.dir, v.fileName!);
+        archive.file(filePath, { name: v.fileName! });
+      }
+      void archive.finalize();
+    });
+  })();
+
+  state.promise = build;
+  state.fileCount = done.length;
+  zipCache.set(jobId, state);
+  try {
+    await build;
+  } catch (err) {
+    zipCache.delete(jobId);
+    throw err;
+  }
+  return zipPath;
 }
 
 async function handleZip(jobId: string): Promise<Response> {
@@ -238,23 +310,21 @@ async function handleZip(jobId: string): Promise<Response> {
   const done = job.videos.filter((v) => v.state === 'completed' && v.fileName);
   if (done.length === 0) return errorJson('No completed files to zip yet.', 409);
 
-  const archive = archiver('zip', { store: true }); // media is already compressed
-  archive.on('warning', (err) => console.warn('[playlist-worker] zip warning:', err.message));
-  archive.on('error', (err) => console.error('[playlist-worker] zip error:', err.message));
-  for (const v of done) {
-    const filePath = path.join(job.dir, v.fileName!);
-    try {
-      await fs.access(filePath);
-      archive.file(filePath, { name: v.fileName! });
-    } catch { /* file vanished — skip */ }
+  let zipPath: string;
+  try {
+    zipPath = await buildZipBundle(jobId, job);
+  } catch (err) {
+    console.error('[playlist-worker] zip error:', err instanceof Error ? err.message : err);
+    return errorJson('Could not build the ZIP bundle.', 500);
   }
-  // append entries first, then start finalization; the response consumes the stream
-  void archive.finalize();
   const zipName = `${sanitizeDispositionName(job.title || 'playlist')}.zip`;
-  return new Response(Readable.toWeb(archive) as ReadableStream, {
+  const stat = await fs.stat(zipPath).catch(() => null);
+  if (!stat) return errorJson('Could not build the ZIP bundle.', 500);
+  return new Response(Bun.file(zipPath), {
     status: 200,
     headers: {
       'Content-Type': 'application/zip',
+      'Content-Length': String(stat.size),
       'Content-Disposition': contentDisposition(zipName, false),
     },
   });
@@ -273,7 +343,35 @@ async function handle(req: Request): Promise<Response> {
   try {
     if (parts[1] === 'health' && method === 'GET') {
       const bins = await resolveBinaries();
-      return json({ ok: true, service: 'playlist-worker', ytDlp: bins.ytDlp, ffmpeg: bins.ffmpeg, aria2c: await detectAria2c() });
+      return json({
+        ok: true,
+        service: 'playlist-worker',
+        ytDlp: bins.ytDlp,
+        ffmpeg: bins.ffmpeg,
+        aria2c: await detectAria2c(),
+        savedCookies: (await serverCookiesStatus()).saved,
+      });
+    }
+
+    if (parts[1] === 'cookies' && parts.length === 2) {
+      if (method === 'GET') {
+        return json(await serverCookiesStatus());
+      }
+      if (method === 'POST') {
+        const body = await readJson(req);
+        if (!body) return errorJson('Invalid request body.');
+        const raw = typeof body.cookies === 'string' ? body.cookies : '';
+        if (!raw.trim()) return errorJson('Paste the cookies.txt contents to save.');
+        try {
+          const status: ServerCookiesStatus = await saveServerCookies(raw);
+          return json(status);
+        } catch (err) {
+          return errorJson(err instanceof Error ? err.message : 'Could not save the cookies file.', 400);
+        }
+      }
+      if (method === 'DELETE') {
+        return json(await clearServerCookies());
+      }
     }
 
     if (parts[1] === 'info' && method === 'POST') {
@@ -324,6 +422,10 @@ async function handle(req: Request): Promise<Response> {
         if (cookies) {
           const p = await saveCookiesFile(cookies, TMP_DIR);
           setJobCookies(parts[2], p);
+        } else {
+          // no fresh cookies in the request — reuse the saved server-side cookies
+          const saved = await serverCookiesFilePath();
+          if (saved) setJobCookies(parts[2], saved);
         }
         const job = await retryJob(parts[2]);
         return job ? json({ ok: true, jobId: job.id, hasCookies: !!job.hasCookies }) : errorJson('Job not found.', 404);

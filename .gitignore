@@ -57,6 +57,7 @@ server.log
 # sandbox / runtime artifacts
 /.zscripts/
 /agent-ctx/
+/tool-results/
 /db/
 /db.custom.db*
 storage/
