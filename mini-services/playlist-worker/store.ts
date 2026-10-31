@@ -443,7 +443,14 @@ export async function deleteJob(id: string): Promise<boolean> {
   return true;
 }
 
-/** Mark a job back to active and re-queue failed/interrupted videos. */
+/** Attach or refresh the cookies file used by a job's tasks (retry with fresh cookies). */
+export function setJobCookies(id: string, cookiesPath: string | null): void {
+  if (!cookiesPath) return;
+  jobCookies.set(id, cookiesPath);
+  const job = jobs.get(id);
+  if (job) job.hasCookies = true;
+}
+
 export async function retryJob(id: string): Promise<PlaylistJob | null> {
   const job = jobs.get(id);
   if (!job) return null;

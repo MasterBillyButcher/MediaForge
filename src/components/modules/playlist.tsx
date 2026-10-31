@@ -274,17 +274,20 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
     setBusyAction(true);
     try {
       const { retryPlaylistJob } = await import('@/lib/playlist/client');
-      await retryPlaylistJob(job.id);
+      // Attach the currently pasted cookies (if any) so a retry after a
+      // YouTube bot-check wave immediately uses authorized access.
+      const withCookies = useCookies ? cookies || undefined : undefined;
+      await retryPlaylistJob(job.id, withCookies);
       const status = await fetchPlaylistJob(job.id);
       jobIdRef.current = status.id;
       setJob(status);
-      toast.info('Retrying failed videos…');
+      toast.info(withCookies ? 'Retrying failed videos with your cookies…' : 'Retrying failed videos…');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not retry.');
     } finally {
       setBusyAction(false);
     }
-  }, [job]);
+  }, [job, useCookies, cookies]);
 
   const handleDelete = useCallback(async () => {
     if (!job) return;

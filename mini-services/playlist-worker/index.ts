@@ -9,7 +9,7 @@ import {
 } from './engine';
 import {
   JobInputError, TMP_DIR, boot, cancelJob, createJob, deleteJob, getJob,
-  jobStats, listJobs, retryJob,
+  jobStats, listJobs, retryJob, setJobCookies,
 } from './store';
 
 /**
@@ -299,8 +299,19 @@ async function handle(req: Request): Promise<Response> {
         return ok ? json({ ok: true }) : errorJson('Job not found or not active.', 404);
       }
       if (parts.length === 4 && parts[3] === 'retry' && method === 'POST') {
+        // Optional JSON body {cookies} — lets a failed job be retried with fresh cookies
+        // (e.g. after a YouTube bot-check wave). Invalid/absent body → plain retry.
+        let cookies: string | null = null;
+        try {
+          const body = (await req.json()) as { cookies?: unknown } | null;
+          if (body && typeof body.cookies === 'string' && body.cookies.trim()) cookies = body.cookies;
+        } catch { /* no/invalid body — plain retry */ }
+        if (cookies) {
+          const p = await saveCookiesFile(cookies, TMP_DIR);
+          setJobCookies(parts[2], p);
+        }
         const job = await retryJob(parts[2]);
-        return job ? json({ ok: true, jobId: job.id }) : errorJson('Job not found.', 404);
+        return job ? json({ ok: true, jobId: job.id, hasCookies: !!job.hasCookies }) : errorJson('Job not found.', 404);
       }
       if (parts.length === 4 && parts[3] === 'zip' && method === 'GET') {
         return await handleZip(parts[2]);

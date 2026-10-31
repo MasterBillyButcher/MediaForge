@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  Ban, CheckCircle2, Clock, Download, Loader2, Package, RotateCcw, Trash2, XCircle,
+  Ban, CheckCircle2, Clock, Cookie, Download, Loader2, Package, RotateCcw, Trash2, XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -50,6 +50,10 @@ export function JobMonitor({ job, onCancel, onRetry, onDelete, busyAction }: Job
   const hasCompleted = job.completed > 0;
   const upNext = job.videos.find((v) => v.state === 'pending');
   const runningVideos = job.videos.filter((v) => v.state === 'downloading' || v.state === 'processing');
+  // Source (usually YouTube) is asking the server to sign in — cookies fix it.
+  const botBlocked = job.videos.some(
+    (v) => v.state === 'failed' && v.error && /bot detection|authorized access/i.test(v.error),
+  );
 
   return (
     <Card>
@@ -112,6 +116,30 @@ export function JobMonitor({ job, onCancel, onRetry, onDelete, busyAction }: Job
           <Progress value={job.percent} className="h-2.5" />
           {job.error && <p className="text-xs text-red-600 dark:text-red-400">{job.error}</p>}
         </div>
+
+        {/* Bot-detection guidance (typical for YouTube on server IPs) */}
+        {botBlocked && (
+          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3" role="note">
+            <p className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+              <Cookie className="h-4 w-4 shrink-0" aria-hidden />
+              YouTube is asking this server to sign in — cookies fix it
+            </p>
+            <ol className="mt-1.5 list-decimal space-y-0.5 pl-5 text-xs text-muted-foreground">
+              <li>
+                Install a cookies export extension (e.g. <span className="font-medium">Get cookies.txt LOCALLY</span>),
+                open <span className="font-medium">youtube.com</span> while logged in and export its cookies.
+              </li>
+              <li>
+                Paste the exported contents into <span className="font-medium">Advanced options</span> in the playlist
+                form above.
+              </li>
+              <li>
+                Press <span className="font-medium">Retry failed</span> below — the retry now sends your cookies for
+                authorized access.
+              </li>
+            </ol>
+          </div>
+        )}
 
         {/* Running tasks detail */}
         {runningVideos.length > 0 && (

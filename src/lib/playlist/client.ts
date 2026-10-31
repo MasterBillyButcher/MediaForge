@@ -147,8 +147,12 @@ export async function cancelPlaylistJob(id: string): Promise<void> {
   return handleJson<void>(res);
 }
 
-export async function retryPlaylistJob(id: string): Promise<void> {
-  const res = await fetch(withPort(`/pw/jobs/${id}/retry`), { method: 'POST' });
+export async function retryPlaylistJob(id: string, cookies?: string): Promise<void> {
+  const res = await fetch(withPort(`/pw/jobs/${id}/retry`), {
+    method: 'POST',
+    headers: cookies ? { 'Content-Type': 'application/json' } : undefined,
+    body: cookies ? JSON.stringify({ cookies }) : undefined,
+  });
   return handleJson<void>(res);
 }
 

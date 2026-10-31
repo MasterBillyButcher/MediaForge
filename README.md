@@ -222,6 +222,24 @@ Full contract details: [`docs/api-contracts.md`](docs/api-contracts.md)
 - Uploaded/downloaded files live in local storage and are cleaned up automatically by TTL.
 - User-supplied URLs are validated (SSRF protections) before fetching.
 
+## 🛠 Troubleshooting
+
+### YouTube says “Sign in to confirm you're not a bot”
+
+YouTube aggressively bot-checks **cloud/datacenter IPs** (VPS, Railway, Render, etc.).
+Playlist metadata usually loads fine, but video downloads fail until the server presents
+authorized credentials. The fix is your own cookies — the Playlist module supports this
+end-to-end, including **retrying an existing failed job with cookies**:
+
+1. In your browser install a cookies export extension (e.g. **Get cookies.txt LOCALLY**).
+2. Log in to youtube.com and export the cookies for `.youtube.com`.
+3. In the Playlist module → **Advanced options** → paste the exported `cookies.txt` contents.
+4. Re-fetch the playlist (or open your failed job and press **Retry failed**) — every task
+   now runs with your cookies.
+
+> Never share exported cookies — they grant access to your account. Paste them only into
+> your own deployment.
+
 ---
 
 ## 📄 License
