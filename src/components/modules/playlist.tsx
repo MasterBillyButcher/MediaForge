@@ -276,7 +276,7 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
       const { retryPlaylistJob } = await import('@/lib/playlist/client');
       // Attach the currently pasted cookies (if any) so a retry after a
       // YouTube bot-check wave immediately uses authorized access.
-      const withCookies = useCookies ? cookies || undefined : undefined;
+      const withCookies = cookies || undefined;
       await retryPlaylistJob(job.id, withCookies);
       const status = await fetchPlaylistJob(job.id);
       jobIdRef.current = status.id;
@@ -287,7 +287,7 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
     } finally {
       setBusyAction(false);
     }
-  }, [job, useCookies, cookies]);
+  }, [job, cookies]);
 
   const handleDelete = useCallback(async () => {
     if (!job) return;
