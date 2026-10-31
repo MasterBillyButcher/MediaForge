@@ -1,0 +1,1005 @@
+     1→package com.junkfood.seal.util
+     2→
+     3→import android.database.sqlite.SQLiteDatabase
+     4→import android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+     5→import android.media.MediaCodecList
+     6→import android.os.Build
+     7→import android.util.Log
+     8→import android.webkit.CookieManager
+     9→import androidx.annotation.CheckResult
+    10→import com.junkfood.seal.App
+    11→import com.junkfood.seal.App.Companion.audioDownloadDir
+    12→import com.junkfood.seal.App.Companion.context
+    13→import com.junkfood.seal.App.Companion.videoDownloadDir
+    14→import com.junkfood.seal.Downloader
+    15→import com.junkfood.seal.Downloader.onProcessEnded
+    16→import com.junkfood.seal.Downloader.onProcessStarted
+    17→import com.junkfood.seal.Downloader.onTaskEnded
+    18→import com.junkfood.seal.Downloader.onTaskError
+    19→import com.junkfood.seal.Downloader.onTaskStarted
+    20→import com.junkfood.seal.Downloader.toNotificationId
+    21→import com.junkfood.seal.R
+    22→import com.junkfood.seal.database.objects.CommandTemplate
+    23→import com.junkfood.seal.database.objects.DownloadedVideoInfo
+    24→import com.junkfood.seal.ui.page.settings.network.Cookie
+    25→import com.junkfood.seal.util.FileUtil.getArchiveFile
+    26→import com.junkfood.seal.util.FileUtil.getConfigFile
+    27→import com.junkfood.seal.util.FileUtil.getCookiesFile
+    28→import com.junkfood.seal.util.FileUtil.getExternalTempDir
+    29→import com.junkfood.seal.util.FileUtil.getFileName
+    30→import com.junkfood.seal.util.FileUtil.getSdcardTempDir
+    31→import com.junkfood.seal.util.FileUtil.moveFilesToSdcard
+    32→import com.junkfood.seal.util.PreferenceUtil.COOKIE_HEADER
+    33→import com.junkfood.seal.util.PreferenceUtil.getBoolean
+    34→import com.junkfood.seal.util.PreferenceUtil.getInt
+    35→import com.junkfood.seal.util.PreferenceUtil.getString
+    36→import com.junkfood.seal.util.PreferenceUtil.updateBoolean
+    37→import com.yausername.youtubedl_android.YoutubeDL
+    38→import com.yausername.youtubedl_android.YoutubeDLException
+    39→import com.yausername.youtubedl_android.YoutubeDLRequest
+    40→import com.yausername.youtubedl_android.YoutubeDLResponse
+    41→import kotlinx.coroutines.Dispatchers
+    42→import kotlinx.coroutines.withContext
+    43→import kotlinx.serialization.Serializable
+    44→import kotlinx.serialization.json.Json
+    45→import java.util.Locale
+    46→
+    47→object DownloadUtil {
+    48→
+    49→    object CookieScheme {
+    50→        const val NAME = "name"
+    51→        const val VALUE = "value"
+    52→        const val SECURE = "is_secure"
+    53→        const val EXPIRY = "expires_utc"
+    54→        const val HOST = "host_key"
+    55→        const val PATH = "path"
+    56→    }
+    57→
+    58→    private val jsonFormat = Json { ignoreUnknownKeys = true }
+    59→
+    60→    private const val TAG = "DownloadUtil"
+    61→
+    62→    const val BASENAME = "%(title).200B"
+    63→
+    64→    const val EXTENSION = ".%(ext)s"
+    65→
+    66→    private const val ID = "[%(id)s]"
+    67→
+    68→    private const val CLIP_TIMESTAMP = "%(section_start)d-%(section_end)d"
+    69→
+    70→    const val OUTPUT_TEMPLATE_DEFAULT = BASENAME + EXTENSION
+    71→
+    72→    const val OUTPUT_TEMPLATE_ID = "$BASENAME $ID$EXTENSION"
+    73→
+    74→    private const val OUTPUT_TEMPLATE_CLIPS = "$BASENAME [$CLIP_TIMESTAMP]$EXTENSION"
+    75→
+    76→    private const val OUTPUT_TEMPLATE_CHAPTERS =
+    77→        "chapter:$BASENAME/%(section_number)d - %(section_title).200B$EXTENSION"
+    78→
+    79→    private const val OUTPUT_TEMPLATE_SPLIT = "$BASENAME/$OUTPUT_TEMPLATE_DEFAULT"
+    80→
+    81→    private const val PLAYLIST_TITLE_SUBDIRECTORY_PREFIX = "%(playlist)s/"
+    82→
+    83→    private const val CROP_ARTWORK_COMMAND =
+    84→        """--ppa "ffmpeg: -c:v mjpeg -vf crop=\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\"""""
+    85→
+    86→    @CheckResult
+    87→    fun getPlaylistOrVideoInfo(
+    88→        playlistURL: String,
+    89→        downloadPreferences: DownloadPreferences = DownloadPreferences.createFromPreferences(),
+    90→    ): Result<YoutubeDLInfo> =
+    91→        YoutubeDL.runCatching {
+    92→            ToastUtil.makeToastSuspend(context.getString(R.string.fetching_playlist_info))
+    93→            val request = YoutubeDLRequest(playlistURL)
+    94→            with(request) {
+    95→                //            addOption("--compat-options", "no-youtube-unavailable-videos")
+    96→                addOption("--flat-playlist")
+    97→                addOption("--dump-single-json")
+    98→                addOption("-o", BASENAME)
+    99→                addOption("-R", "1")
+   100→                addOption("--socket-timeout", "5")
+   101→                downloadPreferences.run {
+   102→                    if (extractAudio) {
+   103→                        addOption("-x")
+   104→                    }
+   105→                    applyFormatSorter(this, toFormatSorter())
+   106→                    if (proxy) {
+   107→                        enableProxy(proxyUrl)
+   108→                    }
+   109→                    if (forceIpv4) {
+   110→                        addOption("-4")
+   111→                    }
+   112→                    if (cookies) {
+   113→                        enableCookies(userAgentString)
+   114→                    }
+   115→                    if (restrictFilenames) {
+   116→                        addOption("--restrict-filenames")
+   117→                    }
+   118→                }
+   119→            }
+   120→            execute(request, playlistURL).out.run {
+   121→                val playlistInfo = jsonFormat.decodeFromString<PlaylistResult>(this)
+   122→                if (playlistInfo.type != "playlist") {
+   123→                    jsonFormat.decodeFromString<VideoInfo>(this)
+   124→                } else playlistInfo
+   125→            }
+   126→        }
+   127→
+   128→    @CheckResult
+   129→    private fun getVideoInfo(
+   130→        request: YoutubeDLRequest,
+   131→        taskKey: String? = null,
+   132→    ): Result<VideoInfo> =
+   133→        request.runCatching {
+   134→            val response: YoutubeDLResponse =
+   135→                YoutubeDL.getInstance().execute(request, taskKey, null)
+   136→            jsonFormat.decodeFromString(response.out)
+   137→        }
+   138→
+   139→    @CheckResult
+   140→    fun fetchVideoInfoFromUrl(
+   141→        url: String,
+   142→        playlistIndex: Int? = null,
+   143→        taskKey: String? = null,
+   144→        preferences: DownloadPreferences = DownloadPreferences.createFromPreferences(),
+   145→    ): Result<VideoInfo> {
+   146→        with(preferences) {
+   147→            val request =
+   148→                YoutubeDLRequest(url).apply {
+   149→                    addOption("-o", BASENAME)
+   150→                    if (restrictFilenames) {
+   151→                        addOption("--restrict-filenames")
+   152→                    }
+   153→                    if (extractAudio) {
+   154→                        addOption("-x")
+   155→                    }
+   156→                    applyFormatSorter(this@with, toFormatSorter())
+   157→                    if (cookies) {
+   158→                        enableCookies(userAgentString)
+   159→                    }
+   160→                    if (proxy) {
+   161→                        enableProxy(proxyUrl)
+   162→                    }
+   163→                    if (forceIpv4) {
+   164→                        addOption("-4")
+   165→                    }
+   166→                    /*            if (debug) {
+   167→                        addOption("-v")
+   168→                    }*/
+   169→                    if (autoSubtitle) {
+   170→                        addOption("--write-auto-subs")
+   171→                        if (!autoTranslatedSubtitles) {
+   172→                            addOption("--extractor-args", "youtube:skip=translated_subs")
+   173→                        }
+   174→                    }
+   175→                    if (playlistIndex != null) {
+   176→                        addOption("--playlist-items", playlistIndex)
+   177→                        addOption("--dump-json")
+   178→                    } else {
+   179→                        addOption("--dump-single-json")
+   180→                    }
+   181→                    addOption("-R", "1")
+   182→                    addOption("--no-playlist")
+   183→                    addOption("--socket-timeout", "5")
+   184→                }
+   185→            return getVideoInfo(request, taskKey)
+   186→        }
+   187→    }
+   188→
+   189→    @Serializable
+   190→    data class DownloadPreferences(
+   191→        val extractAudio: Boolean,
+   192→        val createThumbnail: Boolean,
+   193→        val downloadPlaylist: Boolean,
+   194→        val subdirectoryExtractor: Boolean,
+   195→        val subdirectoryPlaylistTitle: Boolean,
+   196→        val commandDirectory: String,
+   197→        val downloadSubtitle: Boolean,
+   198→        val embedSubtitle: Boolean,
+   199→        val keepSubtitle: Boolean,
+   200→        val subtitleLanguage: String,
+   201→        val autoSubtitle: Boolean,
+   202→        val autoTranslatedSubtitles: Boolean,
+   203→        val convertSubtitle: Int,
+   204→        val concurrentFragments: Int,
+   205→        val sponsorBlock: Boolean,
+   206→        val sponsorBlockCategory: String,
+   207→        val cookies: Boolean,
+   208→        val aria2c: Boolean,
+   209→        val useCustomAudioPreset: Boolean,
+   210→        val audioFormat: Int,
+   211→        val audioQuality: Int,
+   212→        val convertAudio: Boolean,
+   213→        val formatSorting: Boolean,
+   214→        val sortingFields: String,
+   215→        val audioConvertFormat: Int,
+   216→        val videoFormat: Int,
+   217→        val formatIdString: String,
+   218→        val videoResolution: Int,
+   219→        val privateMode: Boolean,
+   220→        val rateLimit: Boolean,
+   221→        val maxDownloadRate: String,
+   222→        val privateDirectory: Boolean,
+   223→        val cropArtwork: Boolean,
+   224→        val sdcard: Boolean,
+   225→        val sdcardUri: String,
+   226→        val embedThumbnail: Boolean,
+   227→        val videoClips: List<VideoClip>,
+   228→        val splitByChapter: Boolean,
+   229→        val debug: Boolean,
+   230→        val proxy: Boolean,
+   231→        val proxyUrl: String,
+   232→        val newTitle: String,
+   233→        val userAgentString: String,
+   234→        val outputTemplate: String,
+   235→        val useDownloadArchive: Boolean,
+   236→        val embedMetadata: Boolean,
+   237→        val restrictFilenames: Boolean,
+   238→        val supportAv1HardwareDecoding: Boolean,
+   239→        val forceIpv4: Boolean,
+   240→        val mergeAudioStream: Boolean,
+   241→        val mergeToMkv: Boolean,
+   242→    ) {
+   243→        companion object {
+   244→            val EMPTY =
+   245→                DownloadPreferences(
+   246→                    extractAudio = false,
+   247→                    createThumbnail = false,
+   248→                    downloadPlaylist = false,
+   249→                    subdirectoryExtractor = false,
+   250→                    subdirectoryPlaylistTitle = false,
+   251→                    commandDirectory = "",
+   252→                    downloadSubtitle = false,
+   253→                    embedSubtitle = false,
+   254→                    keepSubtitle = false,
+   255→                    subtitleLanguage = "",
+   256→                    autoSubtitle = false,
+   257→                    autoTranslatedSubtitles = false,
+   258→                    convertSubtitle = 0,
+   259→                    concurrentFragments = 0,
+   260→                    sponsorBlock = false,
+   261→                    sponsorBlockCategory = "",
+   262→                    cookies = false,
+   263→                    aria2c = false,
+   264→                    audioFormat = 0,
+   265→                    audioQuality = 0,
+   266→                    convertAudio = false,
+   267→                    formatSorting = false,
+   268→                    sortingFields = "",
+   269→                    audioConvertFormat = 0,
+   270→                    videoFormat = 0,
+   271→                    formatIdString = "",
+   272→                    videoResolution = 0,
+   273→                    privateMode = false,
+   274→                    rateLimit = false,
+   275→                    maxDownloadRate = "",
+   276→                    privateDirectory = false,
+   277→                    cropArtwork = false,
+   278→                    sdcard = false,
+   279→                    sdcardUri = "",
+   280→                    embedThumbnail = false,
+   281→                    videoClips = emptyList(),
+   282→                    splitByChapter = false,
+   283→                    debug = false,
+   284→                    proxy = false,
+   285→                    proxyUrl = "",
+   286→                    newTitle = "",
+   287→                    userAgentString = "",
+   288→                    outputTemplate = "",
+   289→                    useDownloadArchive = false,
+   290→                    embedMetadata = false,
+   291→                    restrictFilenames = false,
+   292→                    supportAv1HardwareDecoding = false,
+   293→                    forceIpv4 = false,
+   294→                    mergeAudioStream = false,
+   295→                    mergeToMkv = false,
+   296→                    useCustomAudioPreset = false,
+   297→                )
+   298→
+   299→            fun createFromPreferences(): DownloadPreferences {
+   300→                val downloadSubtitle = SUBTITLE.getBoolean()
+   301→                val embedSubtitle = EMBED_SUBTITLE.getBoolean()
+   302→                return DownloadPreferences(
+   303→                    extractAudio = EXTRACT_AUDIO.getBoolean(),
+   304→                    createThumbnail = THUMBNAIL.getBoolean(),
+   305→                    downloadPlaylist = PLAYLIST.getBoolean(),
+   306→                    subdirectoryExtractor = SUBDIRECTORY_EXTRACTOR.getBoolean(),
+   307→                    subdirectoryPlaylistTitle = SUBDIRECTORY_PLAYLIST_TITLE.getBoolean(),
+   308→                    commandDirectory = COMMAND_DIRECTORY.getString(),
+   309→                    downloadSubtitle = downloadSubtitle,
+   310→                    embedSubtitle = embedSubtitle,
+   311→                    keepSubtitle = KEEP_SUBTITLE_FILES.getBoolean(),
+   312→                    subtitleLanguage = SUBTITLE_LANGUAGE.getString(),
+   313→                    autoSubtitle = AUTO_SUBTITLE.getBoolean(),
+   314→                    autoTranslatedSubtitles = AUTO_TRANSLATED_SUBTITLES.getBoolean(),
+   315→                    convertSubtitle = CONVERT_SUBTITLE.getInt(),
+   316→                    concurrentFragments = CONCURRENT.getInt(),
+   317→                    sponsorBlock = SPONSORBLOCK.getBoolean(),
+   318→                    sponsorBlockCategory = PreferenceUtil.getSponsorBlockCategories(),
+   319→                    cookies = COOKIES.getBoolean(),
+   320→                    aria2c = ARIA2C.getBoolean(),
+   321→                    useCustomAudioPreset = USE_CUSTOM_AUDIO_PRESET.getBoolean(),
+   322→                    audioFormat = AUDIO_FORMAT.getInt(),
+   323→                    audioQuality = AUDIO_QUALITY.getInt(),
+   324→                    convertAudio = AUDIO_CONVERT.getBoolean(),
+   325→                    formatSorting = FORMAT_SORTING.getBoolean(),
+   326→                    sortingFields = SORTING_FIELDS.getString(),
+   327→                    audioConvertFormat = PreferenceUtil.getAudioConvertFormat(),
+   328→                    videoFormat = PreferenceUtil.getVideoFormat(),
+   329→                    formatIdString = "",
+   330→                    videoResolution = PreferenceUtil.getVideoResolution(),
+   331→                    privateMode = PRIVATE_MODE.getBoolean(),
+   332→                    rateLimit = RATE_LIMIT.getBoolean(),
+   333→                    maxDownloadRate = PreferenceUtil.getMaxDownloadRate(),
+   334→                    privateDirectory = PRIVATE_DIRECTORY.getBoolean(),
+   335→                    cropArtwork = CROP_ARTWORK.getBoolean(),
+   336→                    sdcard = SDCARD_DOWNLOAD.getBoolean(),
+   337→                    sdcardUri = SDCARD_URI.getString(),
+   338→                    embedThumbnail = EMBED_THUMBNAIL.getBoolean(),
+   339→                    videoClips = emptyList(),
+   340→                    splitByChapter = false,
+   341→                    debug = DEBUG.getBoolean(),
+   342→                    proxy = PROXY.getBoolean(),
+   343→                    proxyUrl = PROXY_URL.getString(),
+   344→                    newTitle = "",
+   345→                    userAgentString =
+   346→                        USER_AGENT_STRING.run { if (USER_AGENT.getBoolean()) getString() else "" },
+   347→                    outputTemplate = OUTPUT_TEMPLATE.getString(),
+   348→                    useDownloadArchive = DOWNLOAD_ARCHIVE.getBoolean(),
+   349→                    embedMetadata = EMBED_METADATA.getBoolean(),
+   350→                    restrictFilenames = RESTRICT_FILENAMES.getBoolean(),
+   351→                    supportAv1HardwareDecoding = checkIfAv1HardwareAccelerated(),
+   352→                    forceIpv4 = FORCE_IPV4.getBoolean(),
+   353→                    mergeAudioStream = false,
+   354→                    mergeToMkv =
+   355→                        (downloadSubtitle && embedSubtitle) || MERGE_OUTPUT_MKV.getBoolean(),
+   356→                )
+   357→            }
+   358→        }
+   359→    }
+   360→
+   361→    private fun YoutubeDLRequest.enableCookies(userAgentString: String): YoutubeDLRequest =
+   362→        this.addOption("--cookies", context.getCookiesFile().absolutePath).apply {
+   363→            if (userAgentString.isNotEmpty()) {
+   364→                addOption("--add-header", "User-Agent:$userAgentString")
+   365→            }
+   366→        }
+   367→
+   368→    private fun YoutubeDLRequest.enableProxy(proxyUrl: String): YoutubeDLRequest =
+   369→        this.addOption("--proxy", proxyUrl)
+   370→
+   371→    private fun YoutubeDLRequest.useDownloadArchive(): YoutubeDLRequest =
+   372→        this.addOption("--download-archive", context.getArchiveFile().absolutePath)
+   373→
+   374→    @CheckResult
+   375→    fun getCookieListFromDatabase(): Result<List<Cookie>> = runCatching {
+   376→        CookieManager.getInstance().run {
+   377→            if (!hasCookies()) throw Exception("There is no cookies in the database!")
+   378→            flush()
+   379→        }
+   380→        SQLiteDatabase.openDatabase(
+   381→                context.dataDir.resolve("app_webview/Default/Cookies").absolutePath,
+   382→                null,
+   383→                OPEN_READONLY,
+   384→            )
+   385→            .run {
+   386→                val projection =
+   387→                    arrayOf(
+   388→                        CookieScheme.HOST,
+   389→                        CookieScheme.EXPIRY,
+   390→                        CookieScheme.PATH,
+   391→                        CookieScheme.NAME,
+   392→                        CookieScheme.VALUE,
+   393→                        CookieScheme.SECURE,
+   394→                    )
+   395→                val cookieList = mutableListOf<Cookie>()
+   396→                query("cookies", projection, null, null, null, null, null).run {
+   397→                    while (moveToNext()) {
+   398→                        val expiry = getLong(getColumnIndexOrThrow(CookieScheme.EXPIRY))
+   399→                        val name = getString(getColumnIndexOrThrow(CookieScheme.NAME))
+   400→                        val value = getString(getColumnIndexOrThrow(CookieScheme.VALUE))
+   401→                        val path = getString(getColumnIndexOrThrow(CookieScheme.PATH))
+   402→                        val secure = getLong(getColumnIndexOrThrow(CookieScheme.SECURE)) == 1L
+   403→                        val hostKey = getString(getColumnIndexOrThrow(CookieScheme.HOST))
+   404→
+   405→                        val host = if (hostKey[0] != '.') ".$hostKey" else hostKey
+   406→                        cookieList.add(
+   407→                            Cookie(
+   408→                                domain = host,
+   409→                                name = name,
+   410→                                value = value,
+   411→                                path = path,
+   412→                                secure = secure,
+   413→                                expiry = expiry,
+   414→                            )
+   415→                        )
+   416→                    }
+   417→                    close()
+   418→                }
+   419→                close()
+   420→                cookieList
+   421→            }
+   422→    }
+   423→
+   424→    fun List<Cookie>.toCookiesFileContent(): String =
+   425→        this.fold(StringBuilder(COOKIE_HEADER)) { acc, cookie ->
+   426→                acc.append(cookie.toNetscapeCookieString()).append("\n")
+   427→            }
+   428→            .toString()
+   429→
+   430→    fun getCookiesContentFromDatabase(): Result<String> =
+   431→        getCookieListFromDatabase().mapCatching { it.toCookiesFileContent() }
+   432→
+   433→    private fun YoutubeDLRequest.enableAria2c(): YoutubeDLRequest =
+   434→        this.addOption("--downloader", "libaria2c.so")
+   435→
+   436→    private fun YoutubeDLRequest.addOptionsForVideoDownloads(
+   437→        downloadPreferences: DownloadPreferences
+   438→    ): YoutubeDLRequest =
+   439→        this.apply {
+   440→            downloadPreferences.run {
+   441→                addOption("--add-metadata")
+   442→                addOption("--no-embed-info-json")
+   443→                if (formatIdString.isNotEmpty()) {
+   444→                    addOption("-f", formatIdString)
+   445→                    if (mergeAudioStream) {
+   446→                        addOption("--audio-multistreams")
+   447→                    }
+   448→                } else {
+   449→                    applyFormatSorter(this, toFormatSorter())
+   450→                }
+   451→                if (downloadSubtitle) {
+   452→                    if (autoSubtitle) {
+   453→                        addOption("--write-auto-subs")
+   454→                        if (!autoTranslatedSubtitles) {
+   455→                            addOption("--extractor-args", "youtube:skip=translated_subs")
+   456→                        }
+   457→                    }
+   458→                    subtitleLanguage
+   459→                        .takeIf { it.isNotEmpty() }
+   460→                        ?.let { addOption("--sub-langs", it) }
+   461→                    if (embedSubtitle) {
+   462→                        addOption("--embed-subs")
+   463→                        if (keepSubtitle) {
+   464→                            addOption("--write-subs")
+   465→                        }
+   466→                    } else {
+   467→                        addOption("--write-subs")
+   468→                    }
+   469→                    when (convertSubtitle) {
+   470→                        CONVERT_ASS -> addOption("--convert-subs", "ass")
+   471→                        CONVERT_SRT -> addOption("--convert-subs", "srt")
+   472→                        CONVERT_VTT -> addOption("--convert-subs", "vtt")
+   473→                        CONVERT_LRC -> addOption("--convert-subs", "lrc")
+   474→                        else -> {}
+   475→                    }
+   476→                }
+   477→                if (mergeToMkv) {
+   478→                    addOption("--remux-video", "mkv")
+   479→                    addOption("--merge-output-format", "mkv")
+   480→                }
+   481→                if (embedThumbnail) {
+   482→                    addOption("--embed-thumbnail")
+   483→                }
+   484→                if (videoClips.isEmpty()) addOption("--embed-chapters")
+   485→            }
+   486→        }
+   487→
+   488→    @CheckResult
+   489→    private fun DownloadPreferences.toAudioFormatSorter(): String =
+   490→        this.run {
+   491→            if (!useCustomAudioPreset) return@run ""
+   492→            val format =
+   493→                when (audioFormat) {
+   494→                    M4A -> "acodec:aac"
+   495→                    OPUS -> "acodec:opus"
+   496→                    else -> ""
+   497→                }
+   498→            val quality =
+   499→                when (audioQuality) {
+   500→                    HIGH -> "abr~192"
+   501→                    MEDIUM -> "abr~128"
+   502→                    LOW -> "abr~64"
+   503→                    else -> ""
+   504→                }
+   505→            return@run connectWithDelimiter(format, quality, delimiter = ",")
+   506→        }
+   507→
+   508→    @CheckResult
+   509→    private fun DownloadPreferences.toVideoFormatSorter(): String =
+   510→        this.run {
+   511→            val format =
+   512→                when (videoFormat) {
+   513→                    FORMAT_COMPATIBILITY -> "proto,vcodec:h264,ext"
+   514→                    FORMAT_QUALITY ->
+   515→                        if (supportAv1HardwareDecoding) {
+   516→                            "vcodec:av01"
+   517→                        } else {
+   518→                            "vcodec:vp9.2"
+   519→                        }
+   520→
+   521→                    else -> ""
+   522→                }
+   523→            val res =
+   524→                when (videoResolution) {
+   525→                    1 -> "res:2160"
+   526→                    2 -> "res:1440"
+   527→                    3 -> "res:1080"
+   528→                    4 -> "res:720"
+   529→                    5 -> "res:480"
+   530→                    6 -> "res:360"
+   531→                    7 -> "+res"
+   532→                    else -> ""
+   533→                }
+   534→            val sorter = if (videoFormat == FORMAT_COMPATIBILITY) {
+   535→                connectWithDelimiter(format, res, delimiter = ",")
+   536→            } else {
+   537→                connectWithDelimiter(res, format, delimiter = ",")
+   538→            }
+   539→            return@run sorter
+   540→        }
+   541→
+   542→    private fun YoutubeDLRequest.applyFormatSorter(
+   543→        preferences: DownloadPreferences,
+   544→        sorter: String,
+   545→    ) =
+   546→        preferences.run {
+   547→            if (formatSorting && sortingFields.isNotEmpty()) addOption("-S", sortingFields)
+   548→            else if (sorter.isNotEmpty()) addOption("-S", sorter) else {}
+   549→        }
+   550→
+   551→    @CheckResult
+   552→    fun DownloadPreferences.toFormatSorter(): String =
+   553→        connectWithDelimiter(
+   554→            this.toVideoFormatSorter(),
+   555→            this.toAudioFormatSorter(),
+   556→            delimiter = ",",
+   557→        )
+   558→
+   559→    private fun YoutubeDLRequest.addOptionsForAudioDownloads(
+   560→        id: String,
+   561→        preferences: DownloadPreferences,
+   562→        playlistUrl: String,
+   563→    ): YoutubeDLRequest =
+   564→        this.apply {
+   565→            with(preferences) {
+   566→                addOption("-x")
+   567→                if (downloadSubtitle) {
+   568→                    addOption("--write-subs")
+   569→
+   570→                    if (autoSubtitle) {
+   571→                        addOption("--write-auto-subs")
+   572→                        if (!autoTranslatedSubtitles) {
+   573→                            addOption("--extractor-args", "youtube:skip=translated_subs")
+   574→                        }
+   575→                    }
+   576→                    subtitleLanguage
+   577→                        .takeIf { it.isNotEmpty() }
+   578→                        ?.let { addOption("--sub-langs", it) }
+   579→                    when (convertSubtitle) {
+   580→                        CONVERT_ASS -> addOption("--convert-subs", "ass")
+   581→                        CONVERT_SRT -> addOption("--convert-subs", "srt")
+   582→                        CONVERT_VTT -> addOption("--convert-subs", "vtt")
+   583→                        CONVERT_LRC -> addOption("--convert-subs", "lrc")
+   584→                        else -> {}
+   585→                    }
+   586→                }
+   587→                if (formatIdString.isNotEmpty()) {
+   588→                    addOption("-f", formatIdString)
+   589→                    if (mergeAudioStream) {
+   590→                        addOption("--audio-multistreams")
+   591→                    }
+   592→                } else if (convertAudio) {
+   593→                    when (audioConvertFormat) {
+   594→                        CONVERT_MP3 -> {
+   595→                            addOption("--audio-format", "mp3")
+   596→                        }
+   597→
+   598→                        CONVERT_M4A -> {
+   599→                            addOption("--audio-format", "m4a")
+   600→                        }
+   601→                    }
+   602→                } else {
+   603→                    applyFormatSorter(preferences, toAudioFormatSorter())
+   604→                }
+   605→
+   606→                if (embedMetadata) {
+   607→                    addOption("--embed-metadata")
+   608→                    addOption("--embed-thumbnail")
+   609→                    addOption("--convert-thumbnails", "jpg")
+   610→
+   611→                    if (cropArtwork) {
+   612→                        val configFile = context.getConfigFile(id)
+   613→                        FileUtil.writeContentToFile(CROP_ARTWORK_COMMAND, configFile)
+   614→                        addOption("--config", configFile.absolutePath)
+   615→                    }
+   616→                }
+   617→                addOption("--parse-metadata", "%(release_year,upload_date)s:%(meta_date)s")
+   618→
+   619→                if (playlistUrl.isNotEmpty()) {
+   620→                    addOption("--parse-metadata", "%(album,playlist,title)s:%(meta_album)s")
+   621→                    addOption("--parse-metadata", "%(track_number,playlist_index)d:%(meta_track)s")
+   622→                } else {
+   623→                    addOption("--parse-metadata", "%(album,title)s:%(meta_album)s")
+   624→                }
+   625→            }
+   626→        }
+   627→
+   628→    private fun insertInfoIntoDownloadHistory(
+   629→        videoInfo: VideoInfo,
+   630→        filePaths: List<String>,
+   631→    ): List<String> =
+   632→        filePaths.onEach {
+   633→            DatabaseUtil.insertInfo(videoInfo.toDownloadedVideoInfo(videoPath = it))
+   634→        }
+   635→
+   636→    private fun VideoInfo.toDownloadedVideoInfo(
+   637→        id: Int = 0,
+   638→        videoPath: String,
+   639→    ): DownloadedVideoInfo =
+   640→        this.run {
+   641→            DownloadedVideoInfo(
+   642→                id = id,
+   643→                videoTitle = title,
+   644→                videoAuthor = uploader ?: channel ?: uploaderId.toString(),
+   645→                videoUrl = webpageUrl ?: originalUrl.toString(),
+   646→                thumbnailUrl = thumbnail.toHttpsUrl(),
+   647→                videoPath = videoPath,
+   648→                extractor = extractorKey,
+   649→            )
+   650→        }
+   651→
+   652→    private fun insertSplitChapterIntoHistory(videoInfo: VideoInfo, filePaths: List<String>) =
+   653→        filePaths.onEach {
+   654→            DatabaseUtil.insertInfo(
+   655→                videoInfo.toDownloadedVideoInfo(videoPath = it).copy(videoTitle = it.getFileName())
+   656→            )
+   657→        }
+   658→
+   659→    @CheckResult
+   660→    fun downloadVideo(
+   661→        videoInfo: VideoInfo? = null,
+   662→        playlistUrl: String = "",
+   663→        playlistItem: Int = 0,
+   664→        taskId: String,
+   665→        downloadPreferences: DownloadPreferences,
+   666→        progressCallback: ((Float, Long, String) -> Unit)?,
+   667→    ): Result<List<String>> {
+   668→        if (videoInfo == null)
+   669→            return Result.failure(Throwable(context.getString(R.string.fetch_info_error_msg)))
+   670→
+   671→        with(downloadPreferences) {
+   672→            val url =
+   673→                playlistUrl.ifEmpty {
+   674→                    videoInfo.originalUrl
+   675→                        ?: videoInfo.webpageUrl
+   676→                        ?: return Result.failure(
+   677→                            Throwable(context.getString(R.string.fetch_info_error_msg))
+   678→                        )
+   679→                }
+   680→            val request = YoutubeDLRequest(url)
+   681→            val pathBuilder = StringBuilder()
+   682→            val outputBuilder = StringBuilder()
+   683→
+   684→            request
+   685→                .apply {
+   686→                    addOption("--no-mtime")
+   687→                    //                addOption("-v")
+   688→                    if (cookies) {
+   689→                        enableCookies(userAgentString)
+   690→                    }
+   691→                    if (restrictFilenames) {
+   692→                        addOption("--restrict-filenames")
+   693→                    }
+   694→                    if (proxy) {
+   695→                        enableProxy(proxyUrl)
+   696→                    }
+   697→                    if (forceIpv4) {
+   698→                        addOption("-4")
+   699→                    }
+   700→                    if (debug) {
+   701→                        addOption("-v")
+   702→                    }
+   703→                    if (useDownloadArchive) {
+   704→                        val archiveFile = context.getArchiveFile()
+   705→                        val archiveFileContent = archiveFile.readText()
+   706→                        if (archiveFileContent.contains("${videoInfo.extractor} ${videoInfo.id}")) {
+   707→                            return Result.failure(
+   708→                                YoutubeDLException(
+   709→                                    context.getString(R.string.download_archive_error)
+   710→                                )
+   711→                            )
+   712→                        } else {
+   713→                            useDownloadArchive()
+   714→                        }
+   715→                    }
+   716→
+   717→                    if (rateLimit && maxDownloadRate.isNumberInRange(1, 1000000)) {
+   718→                        addOption("-r", "${maxDownloadRate}K")
+   719→                    }
+   720→
+   721→                    if (playlistItem != 0 && downloadPlaylist) {
+   722→                        addOption("--playlist-items", playlistItem)
+   723→                        if (subdirectoryPlaylistTitle && !videoInfo.playlist.isNullOrEmpty()) {
+   724→                            outputBuilder.append(PLAYLIST_TITLE_SUBDIRECTORY_PREFIX)
+   725→                        }
+   726→                        //                    addOption("--compat-options",
+   727→                        // "no-youtube-unavailable-videos")
+   728→                    } else {
+   729→                        addOption("--no-playlist")
+   730→                    }
+   731→
+   732→                    if (aria2c) {
+   733→                        enableAria2c()
+   734→                    } else if (concurrentFragments > 1) {
+   735→                        addOption("--concurrent-fragments", concurrentFragments)
+   736→                    }
+   737→
+   738→                    if (extractAudio || (videoInfo.vcodec == "none")) {
+   739→                        if (privateDirectory) pathBuilder.append(App.privateDownloadDir)
+   740→                        else pathBuilder.append(audioDownloadDir)
+   741→                        addOptionsForAudioDownloads(
+   742→                            id = videoInfo.id,
+   743→                            preferences = downloadPreferences,
+   744→                            playlistUrl = playlistUrl,
+   745→                        )
+   746→                    } else {
+   747→                        if (privateDirectory) pathBuilder.append(App.privateDownloadDir)
+   748→                        else pathBuilder.append(videoDownloadDir)
+   749→                        addOptionsForVideoDownloads(downloadPreferences)
+   750→                    }
+   751→                    if (sponsorBlock) {
+   752→                        addOption("--sponsorblock-remove", sponsorBlockCategory)
+   753→                    }
+   754→
+   755→                    if (createThumbnail) {
+   756→                        addOption("--write-thumbnail")
+   757→                        addOption("--convert-thumbnails", "png")
+   758→                    }
+   759→                    if (subdirectoryExtractor) {
+   760→                        pathBuilder.append("/${videoInfo.extractorKey}")
+   761→                    }
+   762→
+   763→                    if (sdcard) {
+   764→                        addOption("-P", context.getSdcardTempDir(videoInfo.id).absolutePath)
+   765→                    } else {
+   766→                        addOption("-P", pathBuilder.toString())
+   767→                    }
+   768→
+   769→                    videoClips.forEach {
+   770→                        addOption(
+   771→                            "--download-sections",
+   772→                            "*%d-%d".format(locale = Locale.US, it.start, it.end),
+   773→                        )
+   774→                    }
+   775→                    if (newTitle.isNotEmpty()) {
+   776→                        addCommands(listOf("--replace-in-metadata", "title", ".+", newTitle))
+   777→                    }
+   778→                    if (Build.VERSION.SDK_INT > 23 && !sdcard)
+   779→                        addOption("-P", "temp:" + getExternalTempDir())
+   780→
+   781→                    if (splitByChapter) {
+   782→                        addOption("-o", OUTPUT_TEMPLATE_CHAPTERS)
+   783→                        addOption("--split-chapters")
+   784→                    }
+   785→
+   786→                    val output =
+   787→                        if (splitByChapter) {
+   788→                            OUTPUT_TEMPLATE_SPLIT
+   789→                        } else if (videoClips.isEmpty()) {
+   790→                            outputTemplate
+   791→                        } else {
+   792→                            OUTPUT_TEMPLATE_CLIPS
+   793→                        }
+   794→
+   795→                    addOption("-o", outputBuilder.append(output).toString())
+   796→
+   797→                    for (s in request.buildCommand()) Log.d(TAG, s)
+   798→                }
+   799→                .runCatching {
+   800→                    YoutubeDL.getInstance()
+   801→                        .execute(request = this, processId = taskId, callback = progressCallback)
+   802→                }
+   803→                .onFailure { th ->
+   804→                    return if (
+   805→                        sponsorBlock &&
+   806→                            th.message?.contains("Unable to communicate with SponsorBlock API") ==
+   807→                                true
+   808→                    ) {
+   809→                        th.printStackTrace()
+   810→                        onFinishDownloading(
+   811→                            preferences = this,
+   812→                            videoInfo = videoInfo,
+   813→                            downloadPath = pathBuilder.toString(),
+   814→                            sdcardUri = sdcardUri,
+   815→                        )
+   816→                    } else Result.failure(th)
+   817→                }
+   818→            return onFinishDownloading(
+   819→                preferences = this,
+   820→                videoInfo = videoInfo,
+   821→                downloadPath = pathBuilder.toString(),
+   822→                sdcardUri = sdcardUri,
+   823→            )
+   824→        }
+   825→    }
+   826→
+   827→    private fun onFinishDownloading(
+   828→        preferences: DownloadPreferences,
+   829→        videoInfo: VideoInfo,
+   830→        downloadPath: String,
+   831→        sdcardUri: String,
+   832→    ): Result<List<String>> =
+   833→        preferences.run {
+   834→            val fileName =
+   835→                preferences.newTitle.ifEmpty {
+   836→                    videoInfo.filename
+   837→                        ?: videoInfo.requestedDownloads?.firstOrNull()?.filename
+   838→                        ?: videoInfo.title
+   839→                }
+   840→
+   841→            Log.d(TAG, "onFinishDownloading: $fileName")
+   842→            if (sdcard) {
+   843→                moveFilesToSdcard(
+   844→                        sdcardUri = sdcardUri,
+   845→                        tempPath = context.getSdcardTempDir(videoInfo.id),
+   846→                    )
+   847→                    .onSuccess {
+   848→                        if (privateMode) {
+   849→                            return Result.success(emptyList())
+   850→                        } else if (splitByChapter) {
+   851→                            insertSplitChapterIntoHistory(videoInfo, it)
+   852→                        } else {
+   853→                            insertInfoIntoDownloadHistory(videoInfo, it)
+   854→                        }
+   855→                    }
+   856→            } else {
+   857→                FileUtil.scanFileToMediaLibraryPostDownload(
+   858→                        title = fileName,
+   859→                        downloadDir = downloadPath,
+   860→                    )
+   861→                    .run {
+   862→                        if (privateMode) Result.success(emptyList())
+   863→                        else
+   864→                            Result.success(
+   865→                                if (splitByChapter) {
+   866→                                    insertSplitChapterIntoHistory(videoInfo, this)
+   867→                                } else {
+   868→                                    insertInfoIntoDownloadHistory(videoInfo, this)
+   869→                                }
+   870→                            )
+   871→                    }
+   872→            }
+   873→        }
+   874→
+   875→    @CheckResult
+   876→    fun executeCustomCommandTask(
+   877→        urlString: String,
+   878→        taskId: String,
+   879→        template: CommandTemplate,
+   880→        preferences: DownloadPreferences,
+   881→        progressCallback: ((Float, Long, String) -> Unit),
+   882→    ): Result<YoutubeDLResponse> {
+   883→        val urlList = urlString.split(Regex("[\n ]")).filter { it.isNotBlank() }
+   884→
+   885→        val request =
+   886→            with(preferences) {
+   887→                YoutubeDLRequest(urlList).apply {
+   888→                    commandDirectory.takeIf { it.isNotEmpty() }?.let { addOption("-P", it) }
+   889→                    addOption("--newline")
+   890→                    if (aria2c) {
+   891→                        enableAria2c()
+   892→                    }
+   893→                    if (useDownloadArchive) {
+   894→                        useDownloadArchive()
+   895→                    }
+   896→                    if (restrictFilenames) {
+   897→                        addOption("--restrict-filenames")
+   898→                    }
+   899→                    addOption(
+   900→                        "--config-locations",
+   901→                        FileUtil.writeContentToFile(template.template, context.getConfigFile())
+   902→                            .absolutePath,
+   903→                    )
+   904→                    if (cookies) {
+   905→                        enableCookies(userAgentString)
+   906→                    }
+   907→                }
+   908→            }
+   909→
+   910→        return runCatching {
+   911→            YoutubeDL.getInstance()
+   912→                .execute(request = request, processId = taskId, callback = progressCallback)
+   913→        }
+   914→    }
+   915→
+   916→    suspend fun executeCommandInBackground(
+   917→        url: String,
+   918→        template: CommandTemplate = PreferenceUtil.getTemplate(),
+   919→        downloadPreferences: DownloadPreferences = DownloadPreferences.createFromPreferences(),
+   920→    ) {
+   921→        downloadPreferences.run {
+   922→            val taskId = Downloader.makeKey(url = url, templateName = template.name)
+   923→            val notificationId = taskId.toNotificationId()
+   924→            val urlList = url.split(Regex("[\n ]")).filter { it.isNotBlank() }
+   925→
+   926→            ToastUtil.makeToastSuspend(context.getString(R.string.start_execute))
+   927→            val request =
+   928→                YoutubeDLRequest(urlList).apply {
+   929→                    commandDirectory.takeIf { it.isNotEmpty() }?.let { addOption("-P", it) }
+   930→                    addOption("--newline")
+   931→                    if (aria2c) {
+   932→                        enableAria2c()
+   933→                    }
+   934→                    if (useDownloadArchive) {
+   935→                        useDownloadArchive()
+   936→                    }
+   937→                    if (restrictFilenames) {
+   938→                        addOption("--restrict-filenames")
+   939→                    }
+   940→                    addOption(
+   941→                        "--config-locations",
+   942→                        FileUtil.writeContentToFile(template.template, context.getConfigFile())
+   943→                            .absolutePath,
+   944→                    )
+   945→                    if (cookies) {
+   946→                        enableCookies(userAgentString)
+   947→                    }
+   948→                }
+   949→
+   950→            onProcessStarted()
+   951→            withContext(Dispatchers.Main) { onTaskStarted(template, url) }
+   952→            runCatching {
+   953→                    val response =
+   954→                        YoutubeDL.getInstance().execute(request = request, processId = taskId) {
+   955→                            progress,
+   956→                            _,
+   957→                            text ->
+   958→                            NotificationUtil.makeNotificationForCustomCommand(
+   959→                                notificationId = notificationId,
+   960→                                taskId = taskId,
+   961→                                progress = progress.toInt(),
+   962→                                templateName = template.name,
+   963→                                taskUrl = url,
+   964→                                text = text,
+   965→                            )
+   966→                            Downloader.updateTaskOutput(
+   967→                                template = template,
+   968→                                url = url,
+   969→                                line = text,
+   970→                                progress = progress,
+   971→                            )
+   972→                        }
+   973→                    onTaskEnded(template, url, response.out + "\n" + response.err)
+   974→                }
+   975→                .onFailure {
+   976→                    it.printStackTrace()
+   977→                    if (it is YoutubeDL.CanceledException) return@onFailure
+   978→                    it.message.run {
+   979→                        if (isNullOrEmpty()) onTaskEnded(template, url)
+   980→                        else onTaskError(this, template, url)
+   981→                    }
+   982→                }
+   983→            onProcessEnded()
+   984→        }
+   985→    }
+   986→
+   987→    private fun checkIfAv1HardwareAccelerated(): Boolean {
+   988→        if (PreferenceUtil.containsKey(AV1_HARDWARE_ACCELERATED)) {
+   989→            return AV1_HARDWARE_ACCELERATED.getBoolean()
+   990→        } else {
+   991→            val res =
+   992→                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+   993→                    false
+   994→                } else {
+   995→                    MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+   996→                        info.supportedTypes.any { it.equals("video/av01", ignoreCase = true) } &&
+   997→                            info.isHardwareAccelerated
+   998→                    }
+   999→                }
+  1000→            AV1_HARDWARE_ACCELERATED.updateBoolean(res)
+  1001→            return res
+  1002→        }
+  1003→    }
+  1004→}
+  1005→
