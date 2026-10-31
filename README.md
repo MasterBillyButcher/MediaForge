@@ -124,6 +124,21 @@ bun run dev            # listens on :3030
 
 ---
 
+## 🪟 Windows one-file downloader (PowerShell)
+
+Download YouTube playlists straight into any folder — no Docker, no install. Open PowerShell in the folder where you want the files and paste:
+
+```powershell
+irm https://raw.githubusercontent.com/MasterBillyButcher/MediaForge/main/yt-playlist.ps1 | iex
+```
+
+- Same options as the web app: **MP4 / MKV / WebM** up to 2160p, **MP3 / M4A / WAV / FLAC / OGG** with 128–320 kbps, embed thumbnail + metadata
+- Auto-downloads `yt-dlp` + `ffmpeg` on first run into a `MediaForge-tools` subfolder
+- Cookie support for the YouTube *"Sign in to confirm you're not a bot"* block (paste path to a Netscape `cookies.txt` when asked)
+- Auto-retries failed videos (3 passes) and resumes — re-running skips files you already have (`MediaForge-downloaded.txt` archive)
+
+---
+
 ## 🚢 Deployment
 
 ### ⚠️ Vercel / Netlify / serverless — NOT supported
