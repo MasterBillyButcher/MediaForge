@@ -14,6 +14,7 @@ Every feature shown in the UI is backed by real processing (FFmpeg / FFprobe on 
 - Quality & format grid showing **only options that actually exist** for the given source
 - **Playlist batch downloader** — paste an entire playlist URL, list every video, pick any number of videos, choose a unified or per-video format/quality, watch per-item progress, retry failures
   - Powered by a dedicated background worker (`mini-services/playlist-worker`)
+  - **Smart options** (inspired by [Seal](https://github.com/JunkFood02/Seal)): SponsorBlock segment skipping, subtitle download & embedding (`--sub-langs`, SRT conversion), automatic album/track/cover-art tagging for audio playlists, optional `aria2c` multi-connection downloads, and a sanitized custom yt-dlp arguments box
 - **HLS / m3u8 direct-link downloader** — paste any `.m3u8` URL (e.g. a Twitch VOD CDN link):
   - Parses master playlists & variant qualities
   - Concurrent segment fetching with retries

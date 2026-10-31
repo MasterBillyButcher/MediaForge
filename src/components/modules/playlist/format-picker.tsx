@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Cookie, Settings2 } from 'lucide-react';
+import { Captions, Cookie, Disc3, Gauge, Scissors, Settings2, Sparkles, Terminal } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
@@ -52,6 +53,24 @@ const FORMAT_HINTS: Record<PFormat, string> = {
   opus: 'Modern low-bitrate audio',
 };
 
+export interface ExtrasState {
+  sponsorBlock: boolean;
+  embedSubs: boolean;
+  subtitleLangs: string;
+  albumTags: boolean;
+  aria2c: boolean;
+  extraArgs: string;
+}
+
+export const DEFAULT_EXTRAS: ExtrasState = {
+  sponsorBlock: false,
+  embedSubs: false,
+  subtitleLangs: 'en.*',
+  albumTags: true,
+  aria2c: false,
+  extraArgs: '',
+};
+
 interface FormatPickerProps {
   format: PFormat;
   quality: string;
@@ -61,10 +80,12 @@ interface FormatPickerProps {
   onBitrate: (b: string) => void;
   cookies: string;
   onCookies: (c: string) => void;
+  extras: ExtrasState;
+  onExtras: (patch: Partial<ExtrasState>) => void;
 }
 
 export function FormatPicker(props: FormatPickerProps) {
-  const { format, quality, bitrate, onFormat, onQuality, onBitrate, cookies, onCookies } = props;
+  const { format, quality, bitrate, onFormat, onQuality, onBitrate, cookies, onCookies, extras, onExtras } = props;
   const isAudio = (AUDIO_FORMATS as readonly string[]).includes(format);
   const [advanced, setAdvanced] = useState(false);
 
@@ -195,6 +216,133 @@ export function FormatPicker(props: FormatPickerProps) {
               />
             </div>
           )}
+        </div>
+
+        {/* Smart options — best ideas from Seal, implemented natively */}
+        <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" aria-hidden />
+            <p className="text-sm font-semibold">Smart options</p>
+          </div>
+
+          {/* SponsorBlock */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Scissors className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">Skip sponsor segments</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                  Auto-cuts sponsor reads, self-promos and &quot;like &amp; subscribe&quot;
+                  interruptions using the community SponsorBlock database.
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={extras.sponsorBlock}
+              onCheckedChange={(v) => onExtras({ sponsorBlock: v })}
+              aria-label="Skip sponsor segments with SponsorBlock"
+            />
+          </div>
+
+          {/* Subtitles (video only) */}
+          {!isAudio && (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <Captions className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
+                  <div>
+                    <p className="text-sm font-medium">Download &amp; embed subtitles</p>
+                    <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                      Burned-in no — soft-subbed yes: embedded into MP4/MKV/MOV; WebM keeps sidecar SRT files.
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={extras.embedSubs}
+                  onCheckedChange={(v) => onExtras({ embedSubs: v })}
+                  aria-label="Download and embed subtitles"
+                />
+              </div>
+              {extras.embedSubs && (
+                <div className="space-y-1.5 pl-7">
+                  <Label htmlFor="pl-subs-langs" className="text-xs">
+                    Subtitle languages
+                  </Label>
+                  <Input
+                    id="pl-subs-langs"
+                    value={extras.subtitleLangs}
+                    onChange={(e) => onExtras({ subtitleLangs: e.target.value })}
+                    placeholder="en.*  (or: en,de,fr)"
+                    className="h-10 font-mono text-xs"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Album tagging (audio only) */}
+          {isAudio && (
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Disc3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
+                <div>
+                  <p className="text-sm font-medium">Tag album &amp; track numbers</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                    Album = playlist title, track = its position, cover art embedded — proper music
+                    library metadata for MP3/M4A/FLAC/OGG/Opus.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={extras.albumTags}
+                onCheckedChange={(v) => onExtras({ albumTags: v })}
+                aria-label="Tag album and track numbers"
+              />
+            </div>
+          )}
+
+          {/* aria2c */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">Multi-connection downloads (aria2c)</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                  Up to 8 connections per file — noticeably faster on big videos. Falls back to the
+                  standard downloader when aria2c is not installed on the server.
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={extras.aria2c}
+              onCheckedChange={(v) => onExtras({ aria2c: v })}
+              aria-label="Use aria2c multi-connection downloads"
+            />
+          </div>
+
+          {/* Custom yt-dlp args */}
+          <div className="space-y-2">
+            <div className="flex items-start gap-2.5">
+              <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
+              <div className="flex-1">
+                <Label htmlFor="pl-extra-args" className="text-sm font-medium">
+                  Custom yt-dlp arguments
+                </Label>
+                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                  Appended to every download command — the same escape hatch Seal gives power users.
+                  Unsafe characters are ignored.
+                </p>
+              </div>
+            </div>
+            <Input
+              id="pl-extra-args"
+              value={extras.extraArgs}
+              onChange={(e) => onExtras({ extraArgs: e.target.value })}
+              placeholder="e.g. --restrict-filenames --match-filter duration&lt;600"
+              className="h-10 font-mono text-xs"
+              spellCheck={false}
+            />
+          </div>
         </div>
       </CardContent>
     </Card>

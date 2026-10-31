@@ -44,12 +44,22 @@ export interface PlaylistTaskDto {
   fileUrl: string | null;
 }
 
+export interface JobExtrasDto {
+  sponsorBlock?: boolean;
+  embedSubs?: boolean;
+  subtitleLangs?: string;
+  albumTags?: boolean;
+  aria2c?: boolean;
+  extraArgs?: string;
+}
+
 export interface PlaylistJobDto {
   id: string;
   title: string;
   format: string;
   quality: string;
   bitrate: string;
+  extras?: JobExtrasDto | null;
   state: 'active' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
   createdAt: number;
   finishedAt: number | null;
@@ -84,6 +94,7 @@ export interface CreateJobInputDto {
   quality: string;
   bitrate: string;
   cookies?: string;
+  extras?: JobExtrasDto;
   entries: Array<{ url: string; title: string | null }>;
 }
 

@@ -4,8 +4,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
   AUDIO_BITRATES, AUDIO_FORMATS, MIME_BY_EXT, QUALITY_HEIGHTS, VIDEO_FORMATS,
-  deleteFileQuiet, extractInfo, hydrateEntries, resolveBinaries, saveCookiesFile,
-  type AudioBitrate, type MediaFormat, type QualityHeight,
+  deleteFileQuiet, detectAria2c, extractInfo, hydrateEntries, resolveBinaries, saveCookiesFile,
+  type AudioBitrate, type JobExtras, type MediaFormat, type QualityHeight,
 } from './engine';
 import {
   JobInputError, TMP_DIR, boot, cancelJob, createJob, deleteJob, getJob,
@@ -87,6 +87,20 @@ async function handleInfo(body: Record<string, unknown>): Promise<Response> {
   }
 }
 
+function parseExtras(body: Record<string, unknown>): JobExtras {
+  const raw = body.extras && typeof body.extras === 'object'
+    ? (body.extras as Record<string, unknown>) : {};
+  const bool = (v: unknown) => v === true;
+  return {
+    sponsorBlock: bool(raw.sponsorBlock),
+    embedSubs: bool(raw.embedSubs),
+    subtitleLangs: typeof raw.subtitleLangs === 'string' ? raw.subtitleLangs.slice(0, 120) : '',
+    albumTags: bool(raw.albumTags),
+    aria2c: bool(raw.aria2c),
+    extraArgs: typeof raw.extraArgs === 'string' ? raw.extraArgs.slice(0, 2000) : '',
+  };
+}
+
 async function handleCreateJob(body: Record<string, unknown>): Promise<Response> {
   const format = body.format as MediaFormat;
   const quality = (body.quality ?? 'best') as QualityHeight;
@@ -119,6 +133,7 @@ async function handleCreateJob(body: Record<string, unknown>): Promise<Response>
       format,
       quality,
       bitrate,
+      extras: parseExtras(body),
       cookiesPath,
       entries,
     });
@@ -258,7 +273,7 @@ async function handle(req: Request): Promise<Response> {
   try {
     if (parts[1] === 'health' && method === 'GET') {
       const bins = await resolveBinaries();
-      return json({ ok: true, service: 'playlist-worker', ytDlp: bins.ytDlp, ffmpeg: bins.ffmpeg });
+      return json({ ok: true, service: 'playlist-worker', ytDlp: bins.ytDlp, ffmpeg: bins.ffmpeg, aria2c: await detectAria2c() });
     }
 
     if (parts[1] === 'info' && method === 'POST') {
@@ -288,7 +303,7 @@ async function handle(req: Request): Promise<Response> {
         if (!job) return errorJson('Job not found.', 404);
         return json({
           id: job.id, title: job.title, format: job.format, quality: job.quality,
-          bitrate: job.bitrate, state: job.state, createdAt: job.createdAt,
+          bitrate: job.bitrate, extras: job.extras, state: job.state, createdAt: job.createdAt,
           finishedAt: job.finishedAt, hasCookies: job.hasCookies, error: job.error,
           ...jobStats(job),
           videos: taskViews(job.id, job),

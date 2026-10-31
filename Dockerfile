@@ -48,9 +48,10 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000
 
-# ffmpeg/ffprobe for all media processing; yt-dlp for platform/playlist downloads
+# ffmpeg/ffprobe for all media processing; yt-dlp for platform/playlist downloads;
+# aria2c for multi-connection downloads (playlist worker auto-detects it)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 python3-pip \
+ && apt-get install -y --no-install-recommends ca-certificates aria2 ffmpeg python3 python3-pip \
  && (pip3 install --no-cache-dir --break-system-packages yt-dlp || pip3 install --no-cache-dir yt-dlp) \
  && rm -rf /var/lib/apt/lists/*
 

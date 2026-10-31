@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   executeTask, hydrateEntries, deleteFileQuiet,
-  type MediaFormat, type QualityHeight, type AudioBitrate, type PlaylistEntry,
+  type MediaFormat, type QualityHeight, type AudioBitrate, type PlaylistEntry, type JobExtras,
 } from './engine';
 
 /**
@@ -53,6 +53,7 @@ export interface PlaylistJob {
   format: MediaFormat;
   quality: QualityHeight;
   bitrate: AudioBitrate;
+  extras: JobExtras | null;
   state: JobState;
   createdAt: number;
   finishedAt: number | null;
@@ -69,6 +70,7 @@ interface PersistedJob {
   format: MediaFormat;
   quality: QualityHeight;
   bitrate: AudioBitrate;
+  extras: JobExtras | null;
   state: JobState;
   createdAt: number;
   finishedAt: number | null;
@@ -106,7 +108,7 @@ function jobFile(id: string): string {
 function toPersisted(job: PlaylistJob): PersistedJob {
   return {
     id: job.id, title: job.title, sourceUrl: job.sourceUrl, format: job.format,
-    quality: job.quality, bitrate: job.bitrate, state: job.state,
+    quality: job.quality, bitrate: job.bitrate, extras: job.extras, state: job.state,
     createdAt: job.createdAt, finishedAt: job.finishedAt, hasCookies: job.hasCookies,
     error: job.error,
     videos: job.videos.map((v) => ({
@@ -151,6 +153,7 @@ async function bootRestore(): Promise<void> {
         const p = JSON.parse(raw) as PersistedJob;
         const job: PlaylistJob = {
           ...p,
+          extras: p.extras ?? null,
           dir: path.join(JOBS_DIR, p.id),
           videos: p.videos.map((v) => ({
             ...v,
@@ -215,6 +218,7 @@ export interface CreateJobInput {
   format: MediaFormat;
   quality: QualityHeight;
   bitrate: AudioBitrate;
+  extras?: JobExtras | null;
   cookiesPath: string | null;
   entries: Array<Pick<PlaylistEntry, 'url' | 'title'>>;
 }
@@ -238,6 +242,7 @@ export async function createJob(input: CreateJobInput): Promise<PlaylistJob> {
     format: input.format,
     quality: input.quality,
     bitrate: input.bitrate,
+    extras: input.extras ?? null,
     state: 'active',
     createdAt: Date.now(),
     finishedAt: null,
@@ -316,6 +321,8 @@ async function runTask(job: PlaylistJob, task: VideoTask): Promise<void> {
       height: job.quality,
       bitrate: job.bitrate,
       cookiesPath,
+      extras: job.extras ?? undefined,
+      jobTitle: job.title,
       hooks: {
         onProgress: (patch) => {
           if (patch.progress !== undefined) task.progress = patch.progress;

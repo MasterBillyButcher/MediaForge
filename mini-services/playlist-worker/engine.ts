@@ -189,6 +189,102 @@ export async function deleteFileQuiet(file: string | null): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Advanced job extras (best ideas borrowed from Seal)
+// ---------------------------------------------------------------------------
+
+export const SPONSORBLOCK_CATEGORIES = 'sponsor,selfpromo,interaction';
+
+const ARIA2C_ARGS = ['--downloader', 'aria2c', '--downloader-args', 'aria2c:-x 8 -s 8 -k 1M'];
+
+export interface JobExtras {
+  /** Auto-cut sponsor/self-promo/interaction segments via the SponsorBlock community database. */
+  sponsorBlock?: boolean;
+  /** Download subtitles (video only): embed into MP4/MKV/MOV, sidecar SRT for WebM. */
+  embedSubs?: boolean;
+  /** Subtitle language selection, e.g. "en.*" or "en,de". */
+  subtitleLangs?: string;
+  /** Taggable audio only: album = job title, track = position, embedded cover art. */
+  albumTags?: boolean;
+  /** Use the aria2c external downloader (8 connections) when installed. */
+  aria2c?: boolean;
+  /** Power-user escape hatch: extra yt-dlp arguments (whitelist-sanitized). */
+  extraArgs?: string;
+}
+
+let aria2cAvailable: boolean | null = null;
+
+/** Detect the aria2c external downloader once per process. */
+export async function detectAria2c(): Promise<boolean> {
+  if (aria2cAvailable !== null) return aria2cAvailable;
+  for (const p of ['/usr/bin/aria2c', '/usr/local/bin/aria2c']) {
+    try { await fs.access(p); aria2cAvailable = true; return aria2cAvailable; } catch { /* try next */ }
+  }
+  try {
+    const res = await runUntil('aria2c', ['--version'], 10_000);
+    aria2cAvailable = res.code === 0;
+  } catch { aria2cAvailable = false; }
+  return aria2cAvailable;
+}
+
+const EXTRA_TOKEN_RE = /^(--?[A-Za-z0-9][A-Za-z0-9._=-]{0,80}|[A-Za-z0-9._*,:=@/+~-]{1,200})$/;
+
+/** Whitelist-based sanitizer for user-supplied yt-dlp arguments. */
+export function sanitizeExtraArgs(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const token of raw.trim().split(/\s+/).slice(0, 20)) {
+    if (token === '--' || !EXTRA_TOKEN_RE.test(token)) continue;
+    out.push(token);
+  }
+  return out;
+}
+
+/** Keep only safe characters for --sub-langs; fall back to English captions. */
+export function sanitizeSubtitleLangs(raw: string | undefined): string {
+  const cleaned = (raw ?? '').replace(/[^A-Za-z0-9,._*~-]/g, '').slice(0, 120);
+  return cleaned || 'en.*';
+}
+
+function sanitizeTagValue(raw: string): string {
+  return raw.replace(/["\\\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+const TAGGABLE_AUDIO = ['mp3', 'm4a', 'flac', 'ogg', 'opus'];
+
+function buildAdvancedArgs(p: {
+  extras?: JobExtras;
+  jobTitle: string;
+  index: number;
+  format: MediaFormat;
+}): string[] {
+  const ex = p.extras;
+  if (!ex) return [];
+  const out: string[] = [];
+  const isAudio = (AUDIO_FORMATS as readonly string[]).includes(p.format);
+
+  if (ex.sponsorBlock) out.push('--sponsorblock-remove', SPONSORBLOCK_CATEGORIES);
+
+  if (ex.embedSubs && !isAudio) {
+    out.push('--write-subs', '--write-auto-subs', '--sub-langs', sanitizeSubtitleLangs(ex.subtitleLangs));
+    // WebM cannot hold soft subtitles — keep them as sidecar .srt files instead.
+    if (p.format !== 'webm') out.push('--embed-subs', '--convert-subs', 'srt');
+  }
+
+  if (ex.albumTags && isAudio && TAGGABLE_AUDIO.includes(p.format)) {
+    out.push('--embed-metadata', '--embed-thumbnail');
+    const album = sanitizeTagValue(p.jobTitle);
+    if (album) {
+      const track = String(p.index + 1).padStart(2, '0');
+      // Single argv token; yt-dlp shlex-splits the ffmpeg part itself.
+      out.push('--postprocessor-args', `ffmpeg:-metadata "album=${album}" -metadata "track=${track}"`);
+    }
+  }
+
+  out.push(...sanitizeExtraArgs(ex.extraArgs));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // URL / entry extraction
 // ---------------------------------------------------------------------------
 
@@ -485,10 +581,12 @@ export async function executeTask(opts: {
   height: QualityHeight;
   bitrate: AudioBitrate;
   cookiesPath: string | null;
+  extras?: JobExtras;
+  jobTitle?: string;
   hooks: TaskHooks;
   timeoutMs?: number;
 }): Promise<TaskOutput> {
-  const { jobDir, index, url, format, height, bitrate, cookiesPath, hooks } = opts;
+  const { jobDir, index, url, format, height, bitrate, cookiesPath, extras, jobTitle, hooks } = opts;
   const timeoutMs = opts.timeoutMs ?? 30 * 60 * 1000;
   await fs.mkdir(jobDir, { recursive: true });
 
@@ -496,12 +594,13 @@ export async function executeTask(opts: {
   const prefix = `${String(index + 1).padStart(3, '0')} - `;
   const outTpl = path.join(jobDir, `${prefix}%(title).90B.%(ext)s`);
 
+  const useAria2c = !!extras?.aria2c && (await detectAria2c());
   const args = [
     ...BASE_ARGS,
     '--newline',
     '--no-playlist',
     '--no-mtime',
-    '--concurrent-fragments', '4',
+    ...(useAria2c ? ARIA2C_ARGS : ['--concurrent-fragments', '4']),
     '--ffmpeg-location', '/usr/bin',
     '--paths', jobDir,
     '--progress-template',
@@ -512,6 +611,7 @@ export async function executeTask(opts: {
     '--no-quiet',
     ...(cookiesPath ? ['--cookies', cookiesPath] : []),
     ...plan.downloadArgs,
+    ...buildAdvancedArgs({ extras, jobTitle: jobTitle ?? '', index, format }),
     '-o', outTpl,
     '--', url,
   ];

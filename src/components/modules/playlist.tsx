@@ -19,7 +19,7 @@ import {
   TERMINAL_JOB_STATES, createPlaylistJob, deletePlaylistJob, estimateItemBytes, fetchPlaylistInfo,
   fetchPlaylistJob, fetchPlaylistJobs, type PlaylistInfoDto, type PlaylistJobDto,
 } from '@/lib/playlist/client';
-import { FormatPicker, type PFormat } from './playlist/format-picker';
+import { FormatPicker, DEFAULT_EXTRAS, type ExtrasState, type PFormat } from './playlist/format-picker';
 import { VideoList } from './playlist/video-list';
 import { JobMonitor } from './playlist/job-monitor';
 import { cn } from '@/lib/utils';
@@ -55,6 +55,10 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
   const [quality, setQuality] = useState('best');
   const [bitrate, setBitrate] = useState('best');
   const [cookies, setCookies] = useState('');
+  const [extras, setExtras] = useState<ExtrasState>(DEFAULT_EXTRAS);
+  const handleExtras = useCallback((patch: Partial<ExtrasState>) => {
+    setExtras((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   // --- jobs ----------------------------------------------------------------
   const [job, setJob] = useState<PlaylistJobDto | null>(null);
@@ -224,6 +228,14 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
           quality,
           bitrate,
           cookies: cookies || undefined,
+          extras: {
+            sponsorBlock: extras.sponsorBlock || undefined,
+            embedSubs: extras.embedSubs || undefined,
+            subtitleLangs: extras.embedSubs ? extras.subtitleLangs : undefined,
+            albumTags: extras.albumTags || undefined,
+            aria2c: extras.aria2c || undefined,
+            extraArgs: extras.extraArgs.trim() || undefined,
+          },
           entries: chunks[c],
         });
         last = res;
@@ -239,7 +251,7 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
     } finally {
       setStarting(false);
     }
-  }, [infoUi, selected, format, quality, bitrate, cookies, refreshRecent]);
+  }, [infoUi, selected, format, quality, bitrate, cookies, extras, refreshRecent]);
 
   // --- job actions ---------------------------------------------------------
   const openJob = useCallback(async (id: string) => {
@@ -477,6 +489,8 @@ export function PlaylistModule({ initialUrl }: { initialUrl?: string }) {
                 onBitrate={setBitrate}
                 cookies={cookies}
                 onCookies={setCookies}
+                extras={extras}
+                onExtras={handleExtras}
               />
               <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-muted-foreground" aria-live="polite">
